@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the architecture set.
+// Implements the Architecture set.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,8 +39,8 @@ ArchitectureSet::operator std::string() const {
 
   std::string result;
   auto size = count();
-  for (auto arch : *this) {
-    result.append(getArchitectureName(arch));
+  for (auto Arch : *this) {
+    result.append(getArchitectureName(Arch));
     size -= 1;
     if (size)
       result.append(" ");
@@ -49,19 +49,19 @@ ArchitectureSet::operator std::string() const {
 }
 
 ArchitectureSet::operator std::vector<Architecture>() const {
-  std::vector<Architecture> archs;
-  for (auto arch : *this) {
-    if (arch == AK_unknown)
+  std::vector<Architecture> Archs;
+  for (auto Arch : *this) {
+    if (Arch == AK_unknown)
       continue;
-    archs.emplace_back(arch);
+    Archs.emplace_back(Arch);
   }
-  return archs;
+  return Archs;
 }
 
 void ArchitectureSet::print(raw_ostream &os) const { os << std::string(*this); }
 
-raw_ostream &operator<<(raw_ostream &os, ArchitectureSet set) {
-  set.print(os);
+raw_ostream &operator<<(raw_ostream &os, ArchitectureSet Set) {
+  Set.print(os);
   return os;
 }
 

@@ -43,7 +43,10 @@ public:
     ArchSet |= 1U << static_cast<int>(Arch);
   }
 
-  void clear(Architecture Arch) { ArchSet &= ~(1U << static_cast<int>(Arch)); }
+  ArchitectureSet clear(Architecture Arch) {
+    ArchSet &= ~(1U << static_cast<int>(Arch));
+    return ArchSet;
+  }
 
   bool has(Architecture Arch) const {
     return ArchSet & (1U << static_cast<int>(Arch));
