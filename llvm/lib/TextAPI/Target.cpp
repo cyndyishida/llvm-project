@@ -12,7 +12,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/TextAPI/MachO/Target.h"
+#include "llvm/TextAPI/Target.h"
 
 namespace llvm {
 namespace MachO {
