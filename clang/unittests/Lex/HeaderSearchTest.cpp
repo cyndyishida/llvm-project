@@ -186,16 +186,24 @@ TEST_F(HeaderSearchTest, HeaderMapFrameworkLookup) {
   FileTy File;
   File.init();
 
+  std::string HeaderDirName = "/tmp/Sources/Foo/Headers/";
+  std::string HeaderName = "Foo.h";
+
+#ifdef _WIN32
+  // Force header path to be absolute on windows.
+  // As headermap content should represent absolute locations. 
+  HeaderDirName = "C:" + HeaderDirName;
+#endif /*_WIN32*/
+
   test::HMapFileMockMaker<FileTy> Maker(File);
   auto a = Maker.addString("Foo/Foo.h");
-  auto b = Maker.addString("/tmp/Sources/Foo/Headers/");
-  auto c = Maker.addString("Foo.h");
+  auto b = Maker.addString(HeaderDirName);
+  auto c = Maker.addString(HeaderName);
   Maker.addBucket("Foo/Foo.h", a, b, c);
   addHeaderMap("product-headers.hmap", File.getBuffer(), /*isAngled=*/true);
 
-  StringRef HeaderName = "/tmp/Sources/Foo/Headers/Foo.h";
-  VFS->addFile(
-      HeaderName, 0, llvm::MemoryBuffer::getMemBufferCopy("", HeaderName),
+  VFS->addFile(HeaderDirName + HeaderName, 0,
+               llvm::MemoryBuffer::getMemBufferCopy("", HeaderDirName + HeaderName),
       /*User=*/None, /*Group=*/None, llvm::sys::fs::file_type::regular_file);
 
   bool IsMapped = false; 
@@ -209,7 +217,7 @@ TEST_F(HeaderSearchTest, HeaderMapFrameworkLookup) {
 
   EXPECT_TRUE(FoundFile.hasValue());
   EXPECT_TRUE(IsMapped);
-  auto FE = FoundFile.getValue();
+  auto& FE = FoundFile.getValue();
   auto FI = Search.getExistingFileInfo(FE);
   EXPECT_TRUE(FI);
   EXPECT_TRUE(FI->IsValid);
