@@ -7658,6 +7658,11 @@ def note_hidden_overloaded_virtual_declared_here : Note<
   "|: different return type%diff{ ($ vs $)|}2,3"
   "|: different qualifiers (%2 vs %3)"
   "|: different exception specifications}1">;
+def warn_defined_pure_virtual: Warning<
+  "%0 definition for pure virtual function">, 
+  InGroup<DefinedPureVirtual>, DefaultIgnore;
+def note_defined_pure_virtual_declared_here : Note<
+  "pure virtual function declared %0 declared here">;
 def warn_using_directive_in_header : Warning<
   "using namespace directive in global context in header">,
   InGroup<HeaderHygiene>, DefaultIgnore;
