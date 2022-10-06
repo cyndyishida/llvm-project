@@ -22,6 +22,12 @@ struct ExportedSymbol {
   bool ThreadLocalValue;
 };
 
+struct Symbol {
+  llvm::MachO::SymbolKind Kind;
+  std::string Name;
+  MachO::SymbolFlags Flags;
+};
+
 using ExportedSymbolSeq = std::vector<ExportedSymbol>;
 using UUIDs = std::vector<std::pair<llvm::MachO::Target, std::string>>;
 using TBDFile = std::unique_ptr<MachO::InterfaceFile>;

@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "JSONStub.h"
 #include "TextAPIContext.h"
 #include "TextStubCommon.h"
 #include "llvm/ADT/BitmaskEnum.h"
@@ -1109,10 +1110,20 @@ Expected<std::unique_ptr<InterfaceFile>>
 TextAPIReader::get(MemoryBufferRef InputBuffer) {
   TextAPIContext Ctx;
   Ctx.Path = std::string(InputBuffer.getBufferIdentifier());
+
+  // Handle JSON format files.
+  if (StringRef(Ctx.Path).endswith(".json")) {
+    auto FileOrErr = parseToInterfaceFile(InputBuffer.getBuffer());
+    if (!FileOrErr)
+      return FileOrErr.takeError();
+    return std::move(*FileOrErr);
+  }
+
+  // YAML versions.
+  std::vector<const InterfaceFile *> Files;
   yaml::Input YAMLIn(InputBuffer.getBuffer(), &Ctx, DiagHandler, &Ctx);
 
   // Fill vector with interface file objects created by parsing the YAML file.
-  std::vector<const InterfaceFile *> Files;
   YAMLIn >> Files;
 
   // YAMLIn dynamically allocates for Interface file and in case of error,

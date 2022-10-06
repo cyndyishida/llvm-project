@@ -2,6 +2,7 @@ add_llvm_component_library(LLVMTextAPI
   Architecture.cpp
   ArchitectureSet.cpp
   InterfaceFile.cpp
+  JSONStub.cpp
   PackedVersion.cpp
   Platform.cpp
   Symbol.cpp
