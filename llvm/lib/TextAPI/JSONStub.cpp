@@ -23,17 +23,17 @@ private:
 template <typename JsonT, typename StubT = JsonT>
 Expected<StubT> getRequiredValue(
     StringRef Key, const Object *Obj,
-    std::function<Optional<JsonT>(const Object *, StringRef)> getValue,
+    std::function<std::optional<JsonT>(const Object *, StringRef)> getValue,
     StringRef ErrorMsg,
-    std::function<Optional<StubT>(JsonT)> validate = nullptr) {
-  Optional<JsonT> Val = getValue(Obj, Key);
+    std::function<std::optional<StubT>(JsonT)> validate = nullptr) {
+  std::optional<JsonT> Val = getValue(Obj, Key);
   if (!Val)
     return make_error<JSONStubError>(ErrorMsg);
 
   if (validate == nullptr)
     return static_cast<StubT>(*Val);
 
-  Optional<StubT> Result = validate(*Val);
+  std::optional<StubT> Result = validate(*Val);
   if (!Result.has_value())
     return make_error<JSONStubError>(ErrorMsg);
   return Result.value();
@@ -42,9 +42,9 @@ Expected<StubT> getRequiredValue(
 template <typename JsonT, typename StubT = JsonT>
 Expected<StubT> getOptionalValue(
     StringRef Key, const Object *Obj,
-    std::function<Optional<JsonT>(const Object *, StringRef)> getValue,
+    std::function<std::optional<JsonT>(const Object *, StringRef)> getValue,
     StubT DefaultValue, StringRef ErrorMsg) {
-  Optional<JsonT> Val = getValue(Obj, Key);
+  std::optional<JsonT> Val = getValue(Obj, Key);
   if (!Val)
     return DefaultValue;
 
@@ -54,14 +54,14 @@ Expected<StubT> getOptionalValue(
 template <typename JsonT, typename StubT = JsonT>
 Expected<StubT> getOptionalValue(
     StringRef Key, const Object *Obj,
-    std::function<Optional<JsonT>(const Object *, StringRef)> getValue,
+    std::function<std::optional<JsonT>(const Object *, StringRef)> getValue,
     StubT DefaultValue, StringRef ErrorMsg,
-    std::function<Optional<StubT>(JsonT)> validate) {
-  Optional<JsonT> Val = getValue(Obj, Key);
+    std::function<std::optional<StubT>(JsonT)> validate) {
+  std::optional<JsonT> Val = getValue(Obj, Key);
   if (!Val)
     return DefaultValue;
 
-  Optional<StubT> Result;
+  std::optional<StubT> Result;
   Result = validate(*Val);
   if (!Result.has_value())
     return make_error<JSONStubError>(ErrorMsg);
@@ -107,10 +107,10 @@ struct PODSymbol {
 Expected<FileType> getVersion(const Object *File) {
   auto VersionOrErr = getRequiredValue<int64_t, FileType>(
       "tapi-tbd-version", File, &Object::getInteger, "invalid tbd version",
-      [](int64_t Val) -> Optional<FileType> {
+      [](int64_t Val) -> std::optional<FileType> {
         unsigned Result = Val;
         if (Result != 5)
-          return llvm::None;
+          return std::nullopt;
         return FileType::TBD_V5;
       });
 
@@ -322,12 +322,11 @@ Expected<IFPtr> parseToIF(const Object *File) {
     return NameOrErr.takeError();
   StringRef Name = *NameOrErr;
 
-  auto validatePVValue =
-      [](StringRef Version) -> llvm::Optional<PackedVersion> {
+  auto validatePVValue = [](StringRef Version) -> std::optional<PackedVersion> {
     PackedVersion PV;
     auto [success, truncated] = PV.parse64(Version);
     if (!success || truncated)
-      return llvm::None;
+      return std::nullopt;
     return PV;
   };
 
