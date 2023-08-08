@@ -540,6 +540,7 @@ const uint8_t *processExportNode(const uint8_t *CurrPtr,
     return CurrPtr;
   unsigned Count = 0;
   Entry.TerminalSize = decodeULEB128(CurrPtr, &Count);
+  const uint8_t *ChildStart = CurrPtr;
   CurrPtr += Count;
   if (Entry.TerminalSize != 0) {
     Entry.Flags = decodeULEB128(CurrPtr, &Count);
@@ -569,10 +570,10 @@ const uint8_t *processExportNode(const uint8_t *CurrPtr,
     Child.Name = std::string(reinterpret_cast<const char *>(CurrPtr));
     CurrPtr += Child.Name.length() + 1;
     Child.NodeOffset = decodeULEB128(CurrPtr, &Count);
-    CurrPtr += Count;
+    ChildStart += Child.NodeOffset;
   }
   for (auto &Child : Entry.Children) {
-    CurrPtr = processExportNode(CurrPtr, End, Child);
+    CurrPtr = processExportNode(ChildStart, End, Child);
   }
   return CurrPtr;
 }

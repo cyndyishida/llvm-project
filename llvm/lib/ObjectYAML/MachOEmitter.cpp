@@ -463,6 +463,7 @@ void MachOWriter::dumpExportEntry(raw_ostream &OS,
     OS.write('\0');
     encodeULEB128(EE.NodeOffset, OS);
   }
+
   for (auto EE : Entry.Children)
     dumpExportEntry(OS, EE);
 }
@@ -508,7 +509,7 @@ void MachOWriter::writeLinkEditData(raw_ostream &OS) {
           std::make_pair(SymtabCmd->stroff, &MachOWriter::writeStringTable));
       break;
     case MachO::LC_DYLD_INFO_ONLY:
-      DyldInfoOnlyCmd = &LC.Data.dyld_info_command_data;
+DyldInfoOnlyCmd = &LC.Data.dyld_info_command_data;
       WriteQueue.push_back(std::make_pair(DyldInfoOnlyCmd->rebase_off,
                                           &MachOWriter::writeRebaseOpcodes));
       WriteQueue.push_back(std::make_pair(DyldInfoOnlyCmd->bind_off,
