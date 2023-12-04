@@ -128,7 +128,7 @@ public:
   bool hasBinaryAttrs() const { return BA.get(); }
 
   // Determine if record slice is unassigned.
-  bool isEmpty() const {
+  bool empty() const {
     return !hasBinaryAttrs() && Globals.empty() && Classes.empty() &&
            Categories.empty();
   }
@@ -141,7 +141,7 @@ public:
     StringRef InstallName;
     StringRef UUID;
     StringRef Path;
-    FileType fileType = FileType::Invalid;
+    FileType File = FileType::Invalid;
     llvm::MachO::PackedVersion CurrentVersion;
     llvm::MachO::PackedVersion CompatVersion;
     uint8_t SwiftABI = 0;
@@ -153,6 +153,8 @@ public:
   /// Return reference to BinaryAttrs.
   BinaryAttrs &getBinaryAttrs();
 
+  StringRef copyString(StringRef String);
+
 private:
   const llvm::Triple TargetTriple;
   // Hold tapi converted triple to avoid unecessary casts.
@@ -160,7 +162,6 @@ private:
 
   /// BumpPtrAllocator to store generated/copied strings.
   llvm::BumpPtrAllocator StringAllocator;
-  StringRef copyString(StringRef String);
 
   /// Promote linkage of requested record. It is no-op if linkage type is lower
   /// than the current assignment.
@@ -177,6 +178,8 @@ private:
 
   std::unique_ptr<BinaryAttrs> BA{nullptr};
 };
+
+using Records = llvm::SmallVector<std::shared_ptr<RecordsSlice>, 4>;
 
 } // namespace MachO
 } // namespace llvm

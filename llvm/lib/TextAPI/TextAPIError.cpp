@@ -26,6 +26,9 @@ void TextAPIError::log(raw_ostream &OS) const {
   case TextAPIErrorCode::InvalidInputFormat:
     OS << "invalid input format";
     break;
+  case TextAPIErrorCode::UnsupportedTarget:
+    OS << "unsupported target triple";
+    break;
   default:
     llvm_unreachable("unhandled TextAPIErrorCode");
   }
