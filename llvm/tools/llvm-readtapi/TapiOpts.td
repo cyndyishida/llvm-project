@@ -15,6 +15,7 @@ def compare : FF<"compare", "compare tapi files for library differences">, Group
 def merge : FF<"merge", "merge the input files that represent the same library">, Group<action_group>;
 def extract: FF<"extract", "extract architecture from input file">, Group<action_group>;
 def remove: FF<"remove", "remove architecture from input file">, Group<action_group>;
+def stubify: FF<"stubify", "create a tapi file from a dynamic library or framework">, Group<action_group>;
 
 //
 // General Driver options 

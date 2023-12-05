@@ -180,6 +180,7 @@ private:
 };
 
 using Records = llvm::SmallVector<std::shared_ptr<RecordsSlice>, 4>;
+std::unique_ptr<InterfaceFile> convertToInterfaceFile(const Records &Slices);
 
 } // namespace MachO
 } // namespace llvm

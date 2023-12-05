@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/TextAPI/RecordsSlice.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/TextAPI/Record.h"
 #include "llvm/TextAPI/Symbol.h"
 #include <utility>
@@ -221,4 +222,82 @@ RecordsSlice::BinaryAttrs &RecordsSlice::getBinaryAttrs() {
   if (!hasBinaryAttrs())
     BA = std::make_unique<BinaryAttrs>();
   return *BA;
+}
+
+namespace {
+
+std::unique_ptr<InterfaceFile> createInterfaceFile(const Records &Slices,
+                                                   StringRef InstallName) {
+  // Pickup symbols first.
+  auto Symbols = std::make_unique<SymbolSet>();
+  for (auto &S : Slices) {
+    if (S->empty())
+      continue;
+    auto &BA = S->getBinaryAttrs();
+    if (BA.InstallName != InstallName)
+      continue;
+
+    API2SymbolConverter Converter(Symbols.get(), S->getTarget(),
+                                  !BA.TwoLevelNamespace);
+    S->visit(Converter);
+  }
+
+  auto File = std::make_unique<InterfaceFile>(std::move(Symbols));
+  File->setInstallName(InstallName);
+  // Assign other attributes.
+  for (auto &S : Slices) {
+    if (S->empty())
+      continue;
+    auto &BA = S->getBinaryAttrs();
+    if (BA.InstallName != InstallName)
+      continue;
+    const Target &Targ = S->getTarget();
+    File->addTarget(Targ);
+    if (File->getFileType() == FileType::Invalid)
+      File->setFileType(BA.File);
+    if (BA.AppExtensionSafe && !File->isApplicationExtensionSafe())
+      File->setApplicationExtensionSafe();
+    if (BA.TwoLevelNamespace && !File->isTwoLevelNamespace())
+      File->setTwoLevelNamespace();
+    if (BA.OSLibNotForSharedCache && !File->isOSLibNotForSharedCache())
+      File->setOSLibNotForSharedCache();
+    if (File->getCurrentVersion().empty())
+      File->setCurrentVersion(BA.CurrentVersion);
+    if (File->getCompatibilityVersion().empty())
+      File->setCompatibilityVersion(BA.CompatVersion);
+    if (File->getSwiftABIVersion() == 0)
+      File->setSwiftABIVersion(BA.SwiftABI);
+    if (File->getPath().empty())
+      File->setPath(BA.Path);
+    File->addParentUmbrella(Targ, BA.ParentUmbrella);
+    for (const auto &Client : BA.AllowableClients)
+      File->addAllowableClient(Client, Targ);
+    for (const auto &Lib : BA.RexportedLibraries)
+      File->addReexportedLibrary(Lib, Targ);
+  }
+
+  return File;
+}
+
+} // namespace
+
+std::unique_ptr<InterfaceFile> convertToInterfaceFile(const Records &Slices) {
+  std::unique_ptr<InterfaceFile> File;
+  if (Slices.empty())
+    return File;
+
+  SetVector<StringRef> InstallNames;
+  for (auto &S : Slices) {
+    auto Name = S->getBinaryAttrs().InstallName;
+    if (Name.empty())
+      continue;
+    InstallNames.insert(Name);
+  }
+
+  File = createInterfaceFile(Slices, *InstallNames.begin());
+  for (auto it = std::next(InstallNames.begin()); it != InstallNames.end();
+       ++it)
+    File->addDocument(createInterfaceFile(Slices, *it));
+
+  return File;
 }
