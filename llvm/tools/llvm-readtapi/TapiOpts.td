@@ -25,3 +25,9 @@ defm output: JS<"o", "write output to <file>","<file>">;
 def compact: FF<"compact", "write compact tapi output file">;
 defm filetype: JS<"filetype", "specify the output file type (tbd-v3, tbd-v4 or tbd-v5)","<value>">;
 defm arch: JS<"arch", "specify the architecture", "<architecture>">;
+
+
+//
+// Stub options
+//
+def delete_input : FF<"delete-input", "delete and replace input file on success">;

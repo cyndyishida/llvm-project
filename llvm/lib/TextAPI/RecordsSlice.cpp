@@ -197,6 +197,21 @@ ObjCIVarRecord *ObjCContainerRecord::addObjCIVar(StringRef IVar,
   return Result.first->second.get();
 }
 
+std::vector<ObjCIVarRecord *> ObjCContainerRecord::getObjCIVars() const {
+  std::vector<ObjCIVarRecord *> Records;
+  llvm::for_each(IVars,
+                 [&](auto &Record) { Records.push_back(Record.second.get()); });
+  return Records;
+}
+
+std::vector<ObjCCategoryRecord *>
+ObjCInterfaceRecord::getObjCCategories() const {
+  std::vector<ObjCCategoryRecord *> Records;
+  llvm::for_each(Categories,
+                 [&](auto &Record) { Records.push_back(Record.second); });
+  return Records;
+}
+
 ObjCIVarRecord *RecordsSlice::addObjCIVar(ObjCContainerRecord *Container,
                                           StringRef Name,
                                           RecordLinkage Linkage) {
@@ -224,8 +239,16 @@ RecordsSlice::BinaryAttrs &RecordsSlice::getBinaryAttrs() {
   return *BA;
 }
 
-namespace {
+void RecordsSlice::visit(RecordVisitor &V) const {
+  for (auto &G : Globals)
+    V.visitGlobal(*G.second);
+  for (auto &C : Classes)
+    V.visitObjCInterface(*C.second);
+  for (auto &Cat : Categories)
+    V.visitObjCCategory(*Cat.second);
+}
 
+namespace {
 std::unique_ptr<InterfaceFile> createInterfaceFile(const Records &Slices,
                                                    StringRef InstallName) {
   // Pickup symbols first.
@@ -237,8 +260,8 @@ std::unique_ptr<InterfaceFile> createInterfaceFile(const Records &Slices,
     if (BA.InstallName != InstallName)
       continue;
 
-    API2SymbolConverter Converter(Symbols.get(), S->getTarget(),
-                                  !BA.TwoLevelNamespace);
+    SymbolConverter Converter(Symbols.get(), S->getTarget(),
+                              !BA.TwoLevelNamespace);
     S->visit(Converter);
   }
 
@@ -269,7 +292,8 @@ std::unique_ptr<InterfaceFile> createInterfaceFile(const Records &Slices,
       File->setSwiftABIVersion(BA.SwiftABI);
     if (File->getPath().empty())
       File->setPath(BA.Path);
-    File->addParentUmbrella(Targ, BA.ParentUmbrella);
+    if (!BA.ParentUmbrella.empty())
+      File->addParentUmbrella(Targ, BA.ParentUmbrella);
     for (const auto &Client : BA.AllowableClients)
       File->addAllowableClient(Client, Targ);
     for (const auto &Lib : BA.RexportedLibraries)
@@ -278,10 +302,10 @@ std::unique_ptr<InterfaceFile> createInterfaceFile(const Records &Slices,
 
   return File;
 }
-
 } // namespace
 
-std::unique_ptr<InterfaceFile> convertToInterfaceFile(const Records &Slices) {
+std::unique_ptr<InterfaceFile>
+llvm::MachO::convertToInterfaceFile(const Records &Slices) {
   std::unique_ptr<InterfaceFile> File;
   if (Slices.empty())
     return File;

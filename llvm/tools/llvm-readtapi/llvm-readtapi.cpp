@@ -18,6 +18,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TextAPI/DylibReader.h"
 #include "llvm/TextAPI/TextAPIError.h"
@@ -72,9 +73,14 @@ void reportError(Twine Message, int ExitCode = EXIT_FAILURE) {
   exit(ExitCode);
 }
 
+struct StubOptions {
+  bool deleteInput = false;
+};
+
 struct Context {
   std::vector<std::string> Inputs;
   std::unique_ptr<llvm::raw_fd_stream> OutStream;
+  StubOptions StubOpt;
   FileType WriteFT = FileType::TBD_V5;
   bool Compact = false;
   Architecture Arch = AK_unknown;
@@ -183,15 +189,56 @@ bool handleSingleFileAction(const Context &Ctx, const StringRef Action,
   return handleWriteAction(Ctx, std::move(*OutIF));
 }
 
-bool handleStubifyAction(const Context &Ctx) {
+/// Replace extension considering frameworks.
+void replace_extension(SmallVectorImpl<char> &Path, const Twine &Extension) {
+  StringRef P(Path.begin(), Path.size());
+  auto ParentPath = sys::path::parent_path(P);
+  auto Filename = sys::path::filename(P);
+
+  if (!ParentPath.endswith(Filename.str() + ".framework")) {
+    sys::path::replace_extension(Path, Extension);
+    return;
+  }
+
+  SmallString<8> Storage;
+  StringRef Ext = Extension.toStringRef(Storage);
+
+  // Append '.' if needed.
+  if (!Ext.empty() && Ext[0] != '.')
+    Path.push_back('.');
+
+  // Append extension.
+  Path.append(Ext.begin(), Ext.end());
+}
+
+bool handleStubifyAction(Context &Ctx) {
   if (Ctx.Inputs.empty())
     reportError("stubify requires at least one input file");
 
+  if ((Ctx.Inputs.size() > 1) && (Ctx.OutStream != nullptr))
+    reportError("cannot write multiple inputs into single output file");
+
   for (StringRef FileName : Ctx.Inputs) {
     auto IF = getInterfaceFile(FileName);
+
+    if (Ctx.StubOpt.deleteInput) {
+      std::error_code EC;
+      SmallString<PATH_MAX> OutputLoc = FileName;
+      replace_extension(OutputLoc, ".tbd");
+      Ctx.OutStream = std::make_unique<llvm::raw_fd_stream>(OutputLoc, EC);
+      if (EC)
+        reportError("error opening the file '" + OutputLoc + EC.message());
+    }
+
+    if (handleWriteAction(Ctx, std::move(IF)))
+      return false;
   }
 
   return true;
+}
+
+void setStubOptions(opt::InputArgList &Args, StubOptions &Opt) {
+  Opt.deleteInput = Args.hasArg(OPT_delete_input);
 }
 
 } // anonymous namespace
@@ -269,6 +316,7 @@ int main(int Argc, char **Argv) {
   case OPT_remove:
     return handleSingleFileAction(Ctx, "remove", &InterfaceFile::remove);
   case OPT_stubify:
+    setStubOptions(Args, Ctx.StubOpt);
     return handleStubifyAction(Ctx);
   }
 

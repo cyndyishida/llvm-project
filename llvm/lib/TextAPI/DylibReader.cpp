@@ -267,9 +267,8 @@ Error readSymbols(MachOObjectFile *Obj, RecordsSlice &Slice,
   // mangled symbols.
   for (auto &Sym : Obj->exports(Err)) {
     auto [Flags, Linkage] = parseExport(Sym.flags(), Sym.address());
-    auto *Record = Slice.addRecord(Sym.name(), Flags,
-                                   GlobalRecord::Kind::Unknown, Linkage);
-    Exports[Record->getName()] = {Flags, Linkage};
+    Slice.addRecord(Sym.name(), Flags, GlobalRecord::Kind::Unknown, Linkage);
+    Exports[Sym.name()] = {Flags, Linkage};
   }
 
   for (const auto &Sym : Obj->symbols()) {
@@ -356,6 +355,7 @@ Expected<Records> DylibReader::readFile(MemoryBufferRef Buffer,
       Results.emplace_back(std::make_shared<RecordsSlice>(RecordsSlice({T})));
       if (auto Err = load(Obj, *Results.back(), Opt, Arch))
         return std::move(Err);
+      Results.back()->getBinaryAttrs().Path = Buffer.getBufferIdentifier();
     }
     return Results;
   }
