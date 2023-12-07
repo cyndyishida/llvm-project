@@ -42,6 +42,11 @@ struct ParseOption {
 /// \return List of record slices.
 Expected<Records> readFile(MemoryBufferRef Buffer, const ParseOption &Opt);
 
+/// Get TAPI file representation of binary dylib.
+///
+/// \param Buffer Data that points to dylib.
+Expected<std::unique_ptr<InterfaceFile>> get(MemoryBufferRef Buffer);
+
 } // namespace DylibReader
 
 } // end namespace MachO.

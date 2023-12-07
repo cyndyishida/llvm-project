@@ -14,11 +14,11 @@
 #ifndef LLVM_TEXTAPI_RECORDSLICE_H
 #define LLVM_TEXTAPI_RECORDSLICE_H
 
-#include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/TextAPI/InterfaceFile.h"
 #include "llvm/TextAPI/PackedVersion.h"
 #include "llvm/TextAPI/Record.h"
+#include "llvm/TextAPI/RecordVisitor.h"
 
 namespace llvm {
 namespace MachO {
@@ -133,6 +133,9 @@ public:
            Categories.empty();
   }
 
+  // Visit all records known to RecordsSlice.
+  void visit(RecordVisitor &V) const;
+
   struct BinaryAttrs {
     std::vector<StringRef> AllowableClients;
     std::vector<StringRef> RexportedLibraries;
@@ -182,6 +185,7 @@ private:
 };
 
 using Records = llvm::SmallVector<std::shared_ptr<RecordsSlice>, 4>;
+std::unique_ptr<InterfaceFile> convertToInterfaceFile(const Records &Slices);
 
 } // namespace MachO
 } // namespace llvm
