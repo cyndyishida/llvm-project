@@ -10,14 +10,18 @@
 //
 //===----------------------------------------------------------------------===//
 #include "DiffEngine.h"
+#include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TextAPI/DylibReader.h"
 #include "llvm/TextAPI/TextAPIError.h"
 #include "llvm/TextAPI/TextAPIReader.h"
 #include "llvm/TextAPI/TextAPIWriter.h"
@@ -70,10 +74,37 @@ void reportError(Twine Message, int ExitCode = EXIT_FAILURE) {
   exit(ExitCode);
 }
 
+/// Replace extension considering frameworks.
+void replace_extension(SmallVectorImpl<char> &Path, const Twine &Extension) {
+  StringRef P(Path.begin(), Path.size());
+  auto ParentPath = sys::path::parent_path(P);
+  auto Filename = sys::path::filename(P);
+
+  if (!ParentPath.endswith(Filename.str() + ".framework")) {
+    sys::path::replace_extension(Path, Extension);
+    return;
+  }
+
+  SmallString<8> Storage;
+  StringRef Ext = Extension.toStringRef(Storage);
+
+  // Append '.' if needed.
+  if (!Ext.empty() && Ext[0] != '.')
+    Path.push_back('.');
+
+  // Append extension.
+  Path.append(Ext.begin(), Ext.end());
+}
+
+struct StubOptions {
+  bool deleteInput = false;
+};
+
 struct Context {
   std::vector<std::string> Inputs;
   std::unique_ptr<llvm::raw_fd_stream> OutStream;
   FileType WriteFT = FileType::TBD_V5;
+  StubOptions StubOpt;
   bool Compact = false;
   Architecture Arch = AK_unknown;
 };
@@ -85,13 +116,35 @@ std::unique_ptr<InterfaceFile> getInterfaceFile(const StringRef Filename,
       MemoryBuffer::getFile(Filename);
   if (BufferOrErr.getError())
     ExitOnErr(errorCodeToError(BufferOrErr.getError()));
-  Expected<std::unique_ptr<InterfaceFile>> IF =
-      TextAPIReader::get((*BufferOrErr)->getMemBufferRef());
-  if (!IF)
-    ExitOnErr(IF.takeError());
+  auto Buffer = std::move(*BufferOrErr);
+
+  std::unique_ptr<InterfaceFile> IF;
+  switch (identify_magic(Buffer->getBuffer())) {
+  case file_magic::macho_dynamically_linked_shared_lib:
+    LLVM_FALLTHROUGH;
+  case file_magic::macho_dynamically_linked_shared_lib_stub:
+    LLVM_FALLTHROUGH;
+  case file_magic::macho_universal_binary: {
+    auto IFOrErr = DylibReader::get(Buffer->getMemBufferRef());
+    if (!IFOrErr)
+      ExitOnErr(IFOrErr.takeError());
+    IF = std::move(*IFOrErr);
+    break;
+  }
+  case file_magic::tapi_file: {
+    auto IFOrErr = TextAPIReader::get(Buffer->getMemBufferRef());
+    if (!IFOrErr)
+      ExitOnErr(IFOrErr.takeError());
+    IF = std::move(*IFOrErr);
+    break;
+  }
+  default:
+    reportError(Filename + ": unsupported file type");
+  }
+
   if (ResetBanner)
     ExitOnErr.setBanner(TOOLNAME + ": error: ");
-  return std::move(*IF);
+  return IF;
 }
 
 bool handleCompareAction(const Context &Ctx) {
@@ -141,6 +194,30 @@ bool handleMergeAction(const Context &Ctx) {
   return handleWriteAction(Ctx, std::move(Out));
 }
 
+bool handleStubifyAction(Context &Ctx) {
+  if (Ctx.Inputs.empty())
+    reportError("stubify requires at least one input file");
+
+  if ((Ctx.Inputs.size() > 1) && (Ctx.OutStream != nullptr))
+    reportError("cannot write multiple inputs into single output file");
+
+  for (StringRef FileName : Ctx.Inputs) {
+    auto IF = getInterfaceFile(FileName);
+    if (Ctx.StubOpt.deleteInput) {
+      std::error_code EC;
+      SmallString<PATH_MAX> OutputLoc = FileName;
+      replace_extension(OutputLoc, ".tbd");
+      Ctx.OutStream = std::make_unique<llvm::raw_fd_stream>(OutputLoc, EC);
+      if (EC)
+        reportError("error opening file '" + OutputLoc + EC.message());
+      if (auto Err = sys::fs::remove(FileName))
+        reportError("error deleting file '" + FileName + EC.message());
+    }
+    handleWriteAction(Ctx, std::move(IF));
+  }
+  return EXIT_SUCCESS;
+}
+
 using IFOperation =
     std::function<llvm::Expected<std::unique_ptr<InterfaceFile>>(
         const llvm::MachO::InterfaceFile &, Architecture)>;
@@ -159,6 +236,9 @@ bool handleSingleFileAction(const Context &Ctx, const StringRef Action,
   return handleWriteAction(Ctx, std::move(*OutIF));
 }
 
+void setStubOptions(opt::InputArgList &Args, StubOptions &Opt) {
+  Opt.deleteInput = Args.hasArg(OPT_delete_input);
+}
 } // anonymous namespace
 
 int main(int Argc, char **Argv) {
@@ -178,6 +258,7 @@ int main(int Argc, char **Argv) {
     return EXIT_SUCCESS;
   }
 
+  // TODO: Add support for picking up libraries from directory input.
   for (opt::Arg *A : Args.filtered(OPT_INPUT))
     Ctx.Inputs.push_back(A->getValue());
 
@@ -232,6 +313,9 @@ int main(int Argc, char **Argv) {
     return handleSingleFileAction(Ctx, "extract", &InterfaceFile::extract);
   case OPT_remove:
     return handleSingleFileAction(Ctx, "remove", &InterfaceFile::remove);
+  case OPT_stubify:
+    setStubOptions(Args, Ctx.StubOpt);
+    return handleStubifyAction(Ctx);
   }
 
   return EXIT_SUCCESS;
