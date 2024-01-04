@@ -1,3 +1,6 @@
+# Tapi's awareness of symlinks relies on POSIX level apis not available on windows.
+; UNSUPPORTED: system-windows
+
 ; RUN: rm -rf %t
 ; RUN: split-file %s %t
 ; RUN: mkdir -p %t/sysroot/usr/lib/
