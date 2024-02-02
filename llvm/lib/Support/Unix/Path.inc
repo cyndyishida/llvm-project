@@ -1304,6 +1304,22 @@ std::error_code remove_directories(const Twine &path, bool IgnoreErrors) {
   return std::error_code();
 }
 
+std::error_code read_link(const Twine &path, SmallVectorImpl<char> &output) {
+  output.clear();
+  if (path.isTriviallyEmpty())
+    return std::error_code();
+
+  SmallString<PATH_MAX> Storage;
+  auto P = path.toNullTerminatedStringRef(Storage);
+  SmallString<PATH_MAX> Result;
+  ssize_t Len;
+  if ((Len = ::readlink(P.data(), Result.data(), PATH_MAX)) == -1)
+    return std::error_code(errno, std::generic_category());
+  Result.resize_for_overwrite(Len);
+  output.swap(Result);
+  return std::error_code();
+}
+
 std::error_code real_path(const Twine &path, SmallVectorImpl<char> &dest,
                           bool expand_tilde) {
   dest.clear();

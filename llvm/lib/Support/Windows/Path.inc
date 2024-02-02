@@ -777,16 +777,14 @@ std::error_code status(const Twine &path, file_status &result, bool Follow) {
   if (std::error_code ec = widenPath(path8, path_utf16))
     return ec;
 
-  DWORD Flags = FILE_FLAG_BACKUP_SEMANTICS;
-  if (!Follow) {
-    DWORD attr = ::GetFileAttributesW(path_utf16.begin());
-    if (attr == INVALID_FILE_ATTRIBUTES)
-      return getStatus(INVALID_HANDLE_VALUE, result);
+  DWORD attr = ::GetFileAttributesW(path_utf16.begin());
+  if (attr == INVALID_FILE_ATTRIBUTES)
+    return getStatus(INVALID_HANDLE_VALUE, result);
 
-    // Handle reparse points.
-    if (attr & FILE_ATTRIBUTE_REPARSE_POINT)
-      Flags |= FILE_FLAG_OPEN_REPARSE_POINT;
-  }
+  dword flags = file_flag_backup_semantics;
+  // Handle reparse points.
+  if (!Follow && (attr & FILE_ATTRIBUTE_REPARSE_POINT))
+    Flags |= FILE_FLAG_OPEN_REPARSE_POINT;
 
   ScopedFileHandle h(
       ::CreateFileW(path_utf16.begin(), 0, // Attributes only.
@@ -1450,6 +1448,38 @@ std::error_code real_path(const Twine &path, SmallVectorImpl<char> &dest,
           llvm::sys::fs::openFileForRead(path, fd, OF_None, &dest))
     return EC;
   ::close(fd);
+  return std::error_code();
+}
+
+std::error_code read_link(const Twine &path, SmallVectorImpl<char> &output) {
+  output.clear();
+  if (path.isTriviallyEmpty())
+    return std::error_code();
+
+  SmallString<128> path_storage;
+  SmallVector<wchar_t, 128> path_utf16;
+
+  StringRef path8 = path.toStringRef(path_storage);
+
+  if (isReservedName(path8)) {
+    result = file_status(file_type::character_file);
+    return std::error_code();
+  }
+
+  if (std::error_code ec = widenPath(path8, path_utf16))
+    return ec;
+
+  DWORD Flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+
+  ScopedFileHandle h(
+      ::CreateFileW(path_utf16.begin(), GENERIC_READ, 
+                    FILE_SHARE_READ,
+                    NULL, OPEN_EXISTING, Flags, 0));
+  if (!h)
+    return getStatus(INVALID_HANDLE_VALUE, result);
+
+  if (std::error_code ec = realPathFromHandle(h, output)) 
+    return ec;
   return std::error_code();
 }
 

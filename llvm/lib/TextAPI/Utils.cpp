@@ -73,23 +73,6 @@ std::error_code llvm::MachO::shouldSkipSymLink(const Twine &Path,
   return {};
 }
 
-std::error_code llvm::MachO::read_link(const Twine &Path,
-                                       SmallVectorImpl<char> &LinkPath) {
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
-  errno = 0;
-  SmallString<PATH_MAX> Storage;
-  auto P = Path.toNullTerminatedStringRef(Storage);
-  SmallString<PATH_MAX> Result;
-  ssize_t Len;
-  if ((Len = ::readlink(P.data(), Result.data(), PATH_MAX)) == -1)
-    return {errno, std::generic_category()};
-
-  Result.resize_for_overwrite(Len);
-  LinkPath.swap(Result);
-#endif
-  return {};
-}
-
 std::error_code
 llvm::MachO::make_relative(StringRef From, StringRef To,
                            SmallVectorImpl<char> &RelativePath) {
@@ -122,23 +105,6 @@ llvm::MachO::make_relative(StringRef From, StringRef To,
 
   RelativePath.swap(Result);
 
-  return {};
-}
-std::error_code llvm::MachO::realpath(SmallVectorImpl<char> &Path) {
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
-  if (Path.back() != '\0')
-    Path.append({'\0'});
-  SmallString<PATH_MAX> Result;
-
-  errno = 0;
-  const char *Ptr = nullptr;
-  if ((Ptr = ::realpath(Path.data(), Result.data())) == nullptr)
-    return {errno, std::generic_category()};
-
-  assert(Ptr == Result.data() && "Unexpected pointer");
-  Result.resize_for_overwrite(strlen(Result.data()));
-  Path.swap(Result);
-#endif
   return {};
 }
 

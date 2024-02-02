@@ -53,12 +53,6 @@ void replace_extension(SmallVectorImpl<char> &Path, const Twine &Extension);
 /// \param Result Holds whether to skip over Path.
 std::error_code shouldSkipSymLink(const Twine &Path, bool &Result);
 
-/// Get what the symlink points to.
-/// This is a no-op on windows as it references POSIX level apis.
-///
-/// \param Path The symlink.
-/// \param LinkPath Holds what the symlink points to.
-std::error_code read_link(const Twine &Path, SmallVectorImpl<char> &LinkPath);
 
 /// Turn absolute symlink into relative.
 ///
@@ -67,12 +61,6 @@ std::error_code read_link(const Twine &Path, SmallVectorImpl<char> &LinkPath);
 /// \param RelativePath Path location to update what the symlink points to.
 std::error_code make_relative(StringRef From, StringRef To,
                               SmallVectorImpl<char> &RelativePath);
-
-/// Replace input with it's realpath.
-/// This is a no-op on windows as it references POSIX level apis.
-///
-/// \param Path Input path to replace.
-std::error_code realpath(SmallVectorImpl<char> &Path);
 
 /// Determine if library is private by parsing file path.
 /// It does not touch the file system.

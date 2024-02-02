@@ -238,7 +238,7 @@ static void stubifyDirectory(const StringRef InputPath, Context &Ctx) {
       }
 
       SmallString<PATH_MAX> SymPath;
-      if (auto ec = MachO::read_link(Path, SymPath))
+      if (auto ec = sys::fs::read_link(Path, SymPath))
         reportError("cannot read '" + Path + "' :" + ec.message());
 
       // Sometimes there are broken symlinks that are absolute paths, which are
@@ -271,7 +271,7 @@ static void stubifyDirectory(const StringRef InputPath, Context &Ctx) {
       // For Apple SDKs, the symlink src is guaranteed to be a canonical path
       // because we don't follow symlinks when scanning. The symlink target is
       // constructed from the symlink path and needs to be canonicalized.
-      if (auto ec = realpath(LinkTarget)) {
+      if (auto ec = sys::fs::real_path(Twine(LinkTarget), LinkTarget)) {
         reportWarning(LinkTarget + ": " + ec.message());
         continue;
       }

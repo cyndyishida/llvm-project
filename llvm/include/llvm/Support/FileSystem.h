@@ -334,6 +334,12 @@ std::error_code create_link(const Twine &to, const Twine &from);
 /// specific error_code.
 std::error_code create_hard_link(const Twine &to, const Twine &from);
 
+/// Resolve contents in symbolic link \a path and store result in \a output or return error.
+///
+/// @param path The path to resolve. 
+/// @param output The location to store the resolved path. 
+std::error_code read_link(const Twine &path, SmallVectorImpl<char> &output);
+
 /// Collapse all . and .. patterns, resolve all symlinks, and optionally
 ///        expand ~ expressions to the user's home directory.
 ///
