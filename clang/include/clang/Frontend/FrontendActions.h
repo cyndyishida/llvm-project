@@ -138,6 +138,7 @@ protected:
 public:
   static std::unique_ptr<llvm::raw_pwrite_stream>
   CreateOutputFile(CompilerInstance &CI, StringRef InFile);
+  virtual bool PrepareToExecuteAction(CompilerInstance &CI) override;
 };
 
 class GenerateInterfaceStubsAction : public ASTFrontendAction {

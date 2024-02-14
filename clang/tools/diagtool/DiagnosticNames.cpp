@@ -30,18 +30,19 @@ static const DiagnosticRecord BuiltinDiagnosticsByID[] = {
 #define DIAG(ENUM, CLASS, DEFAULT_MAPPING, DESC, GROUP, SFINAE, NOWERROR,      \
              SHOWINSYSHEADER, SHOWINSYSMACRO, DEFER, CATEGORY)                 \
   {#ENUM, diag::ENUM, STR_SIZE(#ENUM, uint8_t)},
+#include "clang/Basic/DiagnosticASTKinds.inc"
+#include "clang/Basic/DiagnosticAnalysisKinds.inc"
+#include "clang/Basic/DiagnosticCommentKinds.inc"
 #include "clang/Basic/DiagnosticCommonKinds.inc"
 #include "clang/Basic/DiagnosticCrossTUKinds.inc"
 #include "clang/Basic/DiagnosticDriverKinds.inc"
 #include "clang/Basic/DiagnosticFrontendKinds.inc"
-#include "clang/Basic/DiagnosticSerializationKinds.inc"
+#include "clang/Basic/DiagnosticInstallAPIKinds.inc"
 #include "clang/Basic/DiagnosticLexKinds.inc"
 #include "clang/Basic/DiagnosticParseKinds.inc"
-#include "clang/Basic/DiagnosticASTKinds.inc"
-#include "clang/Basic/DiagnosticCommentKinds.inc"
-#include "clang/Basic/DiagnosticSemaKinds.inc"
-#include "clang/Basic/DiagnosticAnalysisKinds.inc"
 #include "clang/Basic/DiagnosticRefactoringKinds.inc"
+#include "clang/Basic/DiagnosticSemaKinds.inc"
+#include "clang/Basic/DiagnosticSerializationKinds.inc"
 #undef DIAG
 };
 

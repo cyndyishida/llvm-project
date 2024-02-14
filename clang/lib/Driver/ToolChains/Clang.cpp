@@ -4949,7 +4949,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       A->render(Args, CmdArgs);
     if (const Arg *A = Args.getLastArg(options::OPT_current__version))
       A->render(Args, CmdArgs);
-
   } else {
     assert((isa<CompileJobAction>(JA) || isa<BackendJobAction>(JA)) &&
            "Invalid action for clang tool.");

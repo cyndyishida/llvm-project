@@ -6,9 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/InstallAPI/Context.h"
+#include "clang/InstallAPI/FileList.h"
 
 using namespace clang;
 using namespace clang::installapi;
@@ -40,4 +42,28 @@ InstallAPIAction::CreateOutputFile(CompilerInstance &CI, StringRef InFile) {
   if (!OS)
     return nullptr;
   return OS;
+}
+
+bool InstallAPIAction::PrepareToExecuteAction(CompilerInstance &CI) {
+  const FrontendInputFile &IF = getCurrentInput();
+  DiagnosticsEngine &Diags = CI.getDiagnostics();
+  if (!IF.isFile() || !IF.getFile().ends_with(".json"))
+    return false;
+
+  FileManager &FM = CI.getFileManager();
+  auto FileOrErr = FM.getBufferForFile(IF.getFile());
+  if (auto Err = FileOrErr.getError()) {
+    Diags.Report(diag::err_fe_error_reading) << FileName << Err.message();
+    return false;
+  }
+
+  HeaderSeq HeaderInputs;
+  llvm::Expected<std::unique_ptr<FileListReader>> Reader =
+      FileListReader::get(std::move(FileOrErr.get()));
+  FileListVisitor Visitor(FM, Diags, HeaderInputs);
+  Reader.get()->visit(Visitor);
+  if (Diags.hasErrorOccurred())
+    return false;
+
+  return true;
 }
