@@ -592,6 +592,13 @@ FileManager::getNoncachedStatValue(StringRef Path,
   return std::error_code();
 }
 
+bool FileManager::exists(StringRef Path) {
+  llvm::vfs::Status Result;
+  if (getNoncachedStatValue(Path, Result))
+    return false;
+  return Result.exists();
+}
+
 void FileManager::GetUniqueIDMapping(
     SmallVectorImpl<OptionalFileEntryRef> &UIDToFiles) const {
   UIDToFiles.clear();

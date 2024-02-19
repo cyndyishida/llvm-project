@@ -303,6 +303,9 @@ public:
   std::error_code getNoncachedStatValue(StringRef Path,
                                         llvm::vfs::Status &Result);
 
+  /// Return whether given \p Path exists by querying 'stat' information.
+  bool exists(StringRef Path);
+
   /// If path is not absolute and FileSystemOptions set the working
   /// directory, the path is modified to be relative to the given
   /// working directory.

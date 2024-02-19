@@ -29,13 +29,6 @@ using namespace llvm::opt;
 using namespace llvm::MachO;
 using namespace clang::driver::options;
 
-static bool exists(FileManager& FM, StringRef Path) {
-  llvm::vfs::Status Result;
-  if (FM.getNoncachedStatValue(Path, Result))
-    return false;
-  return Result.exists();
-}
-
 static const ArgStringList *
 getCC1Arguments(clang::DiagnosticsEngine& Diags,
                 clang::driver::Compilation *Compilation) {
@@ -69,14 +62,19 @@ static CompilerInvocation *createInvocation(clang::DiagnosticsEngine &Diags,
   return Invocation;
 }
 
-static bool run(ArrayRef<const char *> Args) {
-  // Setup Diagnostics engine.
+static bool run(ArrayRef<const char *> CommandArgs) {
+  // InstallAPI only needs to parse AST, so always force on certain options.
+  std::vector<const char *> Args;
+  Args.reserve(CommandArgs.size() + 1);
+  llvm::copy(CommandArgs, std::back_inserter(Args));
+  Args.push_back("-fsyntax-only");
 
+  // Setup Diagnostics engine.
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
   const llvm::opt::OptTable &ClangOpts= clang::driver::getDriverOptTable();
   unsigned MissingArgIndex, MissingArgCount;
   llvm::opt::InputArgList ParsedArgs = ClangOpts.ParseArgs(
-      Args.slice(1), MissingArgIndex, MissingArgCount);
+      ArrayRef(Args).slice(1), MissingArgIndex, MissingArgCount);
   ParseDiagnosticArgs(*DiagOpts, ParsedArgs);
   
   IntrusiveRefCntPtr<DiagnosticsEngine> Diag = new clang::DiagnosticsEngine(
@@ -89,7 +87,7 @@ static bool run(ArrayRef<const char *> Args) {
   // Pickup installed directory. 
   void *MainAddr = (void*) (intptr_t)run;
   std::string ExecutablePath = llvm::sys::path::stem(Args.front()).str();
-  if (!exists(*FM, ExecutablePath)) {
+  if (!FM->exists(ExecutablePath)) {
     if (llvm::ErrorOr<std::string> P =
             llvm::sys::findProgramByName(ExecutablePath)) 
       ExecutablePath = *P;
@@ -97,26 +95,31 @@ static bool run(ArrayRef<const char *> Args) {
       ExecutablePath = llvm::sys::fs::getMainExecutable(Args.front(), MainAddr);
   }
 
-  // Set up driver to parse input arguments. 
-  Args = Args.slice(1);
+  // Set up driver to parse input arguments.
+  auto DriverArgs = llvm::ArrayRef(Args).slice(1);
   clang::driver::Driver Driver(ExecutablePath, llvm::sys::getDefaultTargetTriple(), *Diag, "clang installapi tool");
   Driver.setInstalledDir(llvm::sys::path::parent_path(ExecutablePath));
   bool HasError = false;
-  llvm::opt::InputArgList ArgList = Driver.ParseArgStrings(Args, /*UseDriverMode=*/true, HasError); 
+  llvm::opt::InputArgList ArgList =
+      Driver.ParseArgStrings(DriverArgs, /*UseDriverMode=*/true, HasError);
   // TODO(diagnose) 
   if (HasError) 
     return EXIT_FAILURE; 
   Driver.setCheckInputsExist(false);
   std::unique_ptr<CompilerInstance> CI(new CompilerInstance());
 
+  // Capture InstallAPI specific options and diagnose any option errors.
   Options Opts(*Diag, FM.get(), ArgList);
+  if (Diag->hasErrorOccurred())
+    return EXIT_FAILURE;
+
   InstallAPIContext Ctx;
   Ctx.OutputLoc = Opts.DriverOptions.OutputPath;
 
   // Create compilation and build jobs. 
   // TODO: do this per target triple x proj/priv/proj
   const std::unique_ptr<clang::driver::Compilation> Compilation(
-      Driver.BuildCompilation(llvm::ArrayRef(Args)));
+      Driver.BuildCompilation(llvm::ArrayRef(DriverArgs)));
   if (!Compilation)
     return EXIT_FAILURE;
   const llvm::opt::ArgStringList *const cc1Args =
@@ -148,12 +151,12 @@ static bool run(ArrayRef<const char *> Args) {
   InterfaceFile IF;
   IF.addTarget(Target(AK_x86_64, PLATFORM_MACOS, VersionTuple(10, 14)));
   IF.setInstallName("tmp");
+
+  // Write output file and perform CI cleanup.
   if (auto Err = TextAPIWriter::writeToStream(*Out, IF, Ctx.FT)) {
-  //  // why diagnostics not work?
-  //  //CI->getDiagnostics().Report(diag::err) << Ctx.OutputLoc;
-    consumeError(std::move(Err));
-     CI->clearOutputFiles(/*EraseFiles=*/true);
-     return EXIT_FAILURE;
+    CI->getDiagnostics().Report(diag::err_cannot_open_file) << Ctx.OutputLoc;
+    CI->clearOutputFiles(/*EraseFiles=*/true);
+    return EXIT_FAILURE;
   } 
 
   CI->clearOutputFiles(/*EraseFiles=*/false);
@@ -169,6 +172,5 @@ int main(int argc, const char **argv) {
   if (llvm::sys::Process::FixupStandardFileDescriptors())
     return 1;
 
-  // Always imply.
   return run(llvm::ArrayRef(argv, argc));
 }
