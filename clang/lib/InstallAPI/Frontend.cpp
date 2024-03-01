@@ -41,6 +41,31 @@ ObjCInterfaceRecord *FrontendRecordsSlice::addObjCInterface(
   return ObjCR;
 }
 
+ObjCCategoryRecord *FrontendRecordsSlice::addObjCCategory(
+    StringRef ClassToExtend, StringRef CategoryName,
+    const clang::AvailabilityInfo Avail, const Decl *D, HeaderType Access) {
+  auto *ObjCR =
+      llvm::MachO::RecordsSlice::addObjCCategory(ClassToExtend, CategoryName);
+  FrontendRecords.insert({ObjCR, FrontendAttrs{Avail, D, Access}});
+  return ObjCR;
+}
+
+ObjCIVarRecord *FrontendRecordsSlice::addObjCIVar(
+    ObjCContainerRecord *Container, StringRef IvarName, RecordLinkage Linkage,
+    const clang::AvailabilityInfo Avail, const Decl *D, HeaderType Access,
+    const clang::ObjCIvarDecl::AccessControl AC) {
+  // If the decl otherwise would have been exported, check their access control.
+  // Ivar's linkage is also determined by this.
+  if ((Linkage == RecordLinkage::Exported) &&
+      ((AC == ObjCIvarDecl::Private) || (AC == ObjCIvarDecl::Package)))
+    Linkage = RecordLinkage::Internal;
+  auto *ObjCR =
+      llvm::MachO::RecordsSlice::addObjCIVar(Container, IvarName, Linkage);
+  FrontendRecords.insert({ObjCR, FrontendAttrs{Avail, D, Access}});
+
+  return nullptr;
+}
+
 std::optional<HeaderType>
 InstallAPIContext::findAndRecordFile(const FileEntry *FE,
                                      const Preprocessor &PP) {
@@ -121,8 +146,10 @@ std::unique_ptr<MemoryBuffer> createInputBuffer(InstallAPIContext &Ctx) {
   if (Contents.empty())
     return nullptr;
 
-  return llvm::MemoryBuffer::getMemBufferCopy(
-      Contents, "installapi-includes" + getFileExtension(Ctx.LangMode));
+  SmallString<64> BufferName(
+      {"installapi-includes-", std::string(Ctx.Slice->getTarget()),
+       getName(Ctx.Type), getFileExtension(Ctx.LangMode)});
+  return llvm::MemoryBuffer::getMemBufferCopy(Contents, BufferName);
 }
 
 } // namespace clang::installapi
