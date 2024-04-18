@@ -39,7 +39,8 @@ using namespace clang::driver::options;
 using namespace llvm::opt;
 using namespace llvm::MachO;
 
-static bool runFrontend(StringRef ProgName, bool Verbose,
+static bool runFrontend(StringRef ProgName, Twine Label, 
+                        bool Verbose,
                         InstallAPIContext &Ctx,
                         llvm::vfs::InMemoryFileSystem *FS,
                         const ArrayRef<std::string> InitialArgs) {
@@ -50,7 +51,7 @@ static bool runFrontend(StringRef ProgName, bool Verbose,
     return true;
 
   if (Verbose)
-    llvm::errs() << getName(Ctx.Type) << " Headers:\n"
+    llvm::errs() << Label << " Headers:\n"
                  << ProcessedInput->getBuffer() << "\n\n";
 
   std::string InputFile = ProcessedInput->getBufferIdentifier().str();
@@ -127,10 +128,22 @@ static bool run(ArrayRef<const char *> Args, const char *ProgName) {
     Ctx.Slice = std::make_shared<FrontendRecordsSlice>(Trip);
     for (const HeaderType Type :
          {HeaderType::Public, HeaderType::Private, HeaderType::Project}) {
+      std::vector<std::string> ArgStrings = Opts.getClangFrontendArgs();
+      Opts.addConditionalCC1Args(ArgStrings, Trip, Type);
       Ctx.Type = Type;
-      if (!runFrontend(ProgName, Opts.DriverOpts.Verbose, Ctx,
-                       InMemoryFileSystem.get(), Opts.getClangFrontendArgs()))
+      StringRef HeaderLabel = getName(Ctx.Type);
+      if (!runFrontend(ProgName, HeaderLabel, Opts.DriverOpts.Verbose, Ctx,
+                       InMemoryFileSystem.get(), ArgStrings))
         return EXIT_FAILURE;
+
+      // Run extra passes for unique compiler arguments.
+      for (const auto &[Label, ExtraArgs] : Opts.FEOpts.UniqueArgs) {
+        llvm::append_range(ArgStrings, ExtraArgs);
+        if (!runFrontend(ProgName, Label + " " + HeaderLabel, 
+              Opts.DriverOpts.Verbose, Ctx, InMemoryFileSystem.get(), 
+              ArgStrings))
+          return EXIT_FAILURE;
+      }
     }
     FrontendRecords.emplace_back(std::move(Ctx.Slice));
   }
