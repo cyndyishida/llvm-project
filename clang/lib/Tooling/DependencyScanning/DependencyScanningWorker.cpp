@@ -400,7 +400,7 @@ public:
       ScanningOutputFormat Format, ScanningOptimizations OptimizeArgs,
       bool EagerLoadModules, bool DisableFree, bool EmitDependencyFile,
       bool DiagGenerationAsCompilation, const CASOptions &CASOpts,
-      std::optional<StringRef> ModuleName = std::nullopt,
+      std::optional<ArrayRef<StringRef>> ModuleNames = std::nullopt,
       raw_ostream *VerboseOS = nullptr)
       : WorkingDirectory(WorkingDirectory), Consumer(Consumer),
         Controller(Controller), DepFS(std::move(DepFS)),
@@ -409,7 +409,7 @@ public:
         EagerLoadModules(EagerLoadModules), DisableFree(DisableFree),
         CASOpts(CASOpts), EmitDependencyFile(EmitDependencyFile),
         DiagGenerationAsCompilation(DiagGenerationAsCompilation),
-        ModuleName(ModuleName), VerboseOS(VerboseOS) {
+        ModuleNames(ModuleNames), VerboseOS(VerboseOS) {
     // The FullIncludeTree output format completely subsumes header search and
     // VFS optimizations due to how it works. Disable these optimizations so
     // we're not doing unneeded work.
@@ -599,8 +599,9 @@ public:
 
     std::unique_ptr<FrontendAction> Action;
 
-    if (ModuleName)
-      Action = std::make_unique<GetDependenciesByModuleNameAction>(*ModuleName);
+    if (ModuleNames && !ModuleNames->empty())
+      Action =
+          std::make_unique<GetDependenciesByModuleNameAction>(*ModuleNames);
     else
       Action = std::make_unique<ReadPCHAndPreprocessAction>();
 
@@ -687,7 +688,7 @@ private:
   const CASOptions &CASOpts;
   bool EmitDependencyFile = false;
   bool DiagGenerationAsCompilation;
-  std::optional<StringRef> ModuleName;
+  std::optional<ArrayRef<StringRef>> ModuleNames;
   std::optional<CompilerInstance> ScanInstanceStorage;
   std::shared_ptr<ModuleDepCollector> MDC;
   std::vector<std::string> LastCC1Arguments;
@@ -739,7 +740,7 @@ DependencyScanningWorker::getOrCreateFileManager() const {
 llvm::Error DependencyScanningWorker::computeDependencies(
     StringRef WorkingDirectory, const std::vector<std::string> &CommandLine,
     DependencyConsumer &Consumer, DependencyActionController &Controller,
-    std::optional<StringRef> ModuleName) {
+    std::optional<ArrayRef<StringRef>> ModuleNames) {
   std::vector<const char *> CLI;
   for (const std::string &Arg : CommandLine)
     CLI.push_back(Arg.c_str());
@@ -753,7 +754,7 @@ llvm::Error DependencyScanningWorker::computeDependencies(
   TextDiagnosticPrinter DiagPrinter(DiagnosticsOS, DiagOpts.release());
 
   if (computeDependencies(WorkingDirectory, CommandLine, Consumer, Controller,
-                          DiagPrinter, ModuleName))
+                          DiagPrinter, ModuleNames))
     return llvm::Error::success();
   return llvm::make_error<llvm::StringError>(DiagnosticsOS.str(),
                                              llvm::inconvertibleErrorCode());
@@ -823,7 +824,7 @@ static bool createAndRunToolInvocation(
 bool DependencyScanningWorker::computeDependencies(
     StringRef WorkingDirectory, const std::vector<std::string> &CommandLine,
     DependencyConsumer &Consumer, DependencyActionController &Controller,
-    DiagnosticConsumer &DC, std::optional<StringRef> ModuleName) {
+    DiagnosticConsumer &DC, std::optional<ArrayRef<StringRef>> ModuleNames) {
   // Reset what might have been modified in the previous worker invocation.
   BaseFS->setCurrentWorkingDirectory(WorkingDirectory);
 
@@ -833,7 +834,7 @@ bool DependencyScanningWorker::computeDependencies(
   // If we're scanning based on a module name alone, we don't expect the client
   // to provide us with an input file. However, the driver really wants to have
   // one. Let's just make it up to make the driver happy.
-  if (ModuleName) {
+  if (ModuleNames && !ModuleNames->empty()) {
     auto OverlayFS =
         llvm::makeIntrusiveRefCnt<llvm::vfs::OverlayFileSystem>(BaseFS);
     auto InMemoryFS =
@@ -842,10 +843,12 @@ bool DependencyScanningWorker::computeDependencies(
 
     SmallString<128> FakeInputPath;
     // TODO: We should retry the creation if the path already exists.
-    llvm::sys::fs::createUniquePath(*ModuleName + "-%%%%%%%%.input",
+    llvm::sys::fs::createUniquePath(ModuleNames->front() + "-%%%%%%%%.input",
                                     FakeInputPath,
                                     /*MakeAbsolute=*/false);
-    InMemoryFS->addFile(FakeInputPath, 0, llvm::MemoryBuffer::getMemBuffer(""));
+    std::string FakeString(ModuleNames->size(), ' ');
+    InMemoryFS->addFile(FakeInputPath, 0,
+                        llvm::MemoryBuffer::getMemBuffer(FakeString));
 
     llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> InMemoryOverlay =
         InMemoryFS;
@@ -886,13 +889,11 @@ bool DependencyScanningWorker::computeDependencies(
   // in-process; preserve the original value, which is
   // always true for a driver invocation.
   bool DisableFree = true;
-  DependencyScanningAction Action(WorkingDirectory, Consumer, Controller, DepFS,
-                                  DepCASFS, CacheFS,
-                                  Format, OptimizeArgs, EagerLoadModules,
-                                  DisableFree,
-                                  /*EmitDependencyFile=*/false,
-                                  /*DiagGenerationAsCompilation=*/false, getCASOpts(),
-                                  ModuleName);
+  DependencyScanningAction Action(
+      WorkingDirectory, Consumer, Controller, DepFS, DepCASFS, CacheFS, Format,
+      OptimizeArgs, EagerLoadModules, DisableFree,
+      /*EmitDependencyFile=*/false,
+      /*DiagGenerationAsCompilation=*/false, getCASOpts(), ModuleNames);
   bool Success = false;
   if (FinalCommandLine[1] == "-cc1") {
     Success = createAndRunToolInvocation(FinalCommandLine, Action, *FileMgr,

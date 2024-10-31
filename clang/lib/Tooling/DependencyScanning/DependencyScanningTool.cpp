@@ -12,6 +12,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/Utils.h"
 #include "clang/Tooling/DependencyScanning/ScanAndUpdateArgs.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/CAS/ObjectStore.h"
 
 using namespace clang;
@@ -282,10 +283,20 @@ llvm::Expected<ModuleDepsGraph> DependencyScanningTool::getModuleDependencies(
     StringRef ModuleName, const std::vector<std::string> &CommandLine,
     StringRef CWD, const llvm::DenseSet<ModuleID> &AlreadySeen,
     LookupModuleOutputCallback LookupModuleOutput) {
+  std::vector<StringRef> ModuleNames = {ModuleName};
+  return getModuleDependencies(ModuleNames, CommandLine, CWD, AlreadySeen,
+                               LookupModuleOutput);
+}
+
+llvm::Expected<ModuleDepsGraph> DependencyScanningTool::getModuleDependencies(
+    ArrayRef<StringRef> ModuleNames,
+    const std::vector<std::string> &CommandLine, StringRef CWD,
+    const llvm::DenseSet<ModuleID> &AlreadySeen,
+    LookupModuleOutputCallback LookupModuleOutput) {
   FullDependencyConsumer Consumer(AlreadySeen);
   auto Controller = createActionController(LookupModuleOutput);
   llvm::Error Result = Worker.computeDependencies(CWD, CommandLine, Consumer,
-                                                  *Controller, ModuleName);
+                                                  *Controller, ModuleNames);
   if (Result)
     return std::move(Result);
   return Consumer.takeModuleGraphDeps();
@@ -314,6 +325,7 @@ TranslationUnitDeps FullDependencyConsumer::takeTranslationUnitDeps() {
   return TU;
 }
 
+// FIXME(Cyndy), should we have a map from initial modulename to ModuleDepGraph?
 ModuleDepsGraph FullDependencyConsumer::takeModuleGraphDeps() {
   ModuleDepsGraph ModuleGraph;
 

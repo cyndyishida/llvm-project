@@ -125,18 +125,17 @@ public:
   ///
   /// \returns false if clang errors occurred (with diagnostics reported to
   /// \c DiagConsumer), true otherwise.
-  bool computeDependencies(StringRef WorkingDirectory,
-                           const std::vector<std::string> &CommandLine,
-                           DependencyConsumer &DepConsumer,
-                           DependencyActionController &Controller,
-                           DiagnosticConsumer &DiagConsumer,
-                           std::optional<StringRef> ModuleName = std::nullopt);
+  bool computeDependencies(
+      StringRef WorkingDirectory, const std::vector<std::string> &CommandLine,
+      DependencyConsumer &DepConsumer, DependencyActionController &Controller,
+      DiagnosticConsumer &DiagConsumer,
+      std::optional<ArrayRef<StringRef>> ModuleNames = std::nullopt);
   /// \returns A \c StringError with the diagnostic output if clang errors
   /// occurred, success otherwise.
   llvm::Error computeDependencies(
       StringRef WorkingDirectory, const std::vector<std::string> &CommandLine,
       DependencyConsumer &Consumer, DependencyActionController &Controller,
-      std::optional<StringRef> ModuleName = std::nullopt);
+      std::optional<ArrayRef<StringRef>> ModuleName = std::nullopt);
 
   /// Scan from a compiler invocation.
   /// If \p DiagGenerationAsCompilation is true it will generate error

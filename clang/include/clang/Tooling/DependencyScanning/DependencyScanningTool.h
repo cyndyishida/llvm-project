@@ -191,6 +191,13 @@ public:
       StringRef CWD, const llvm::DenseSet<ModuleID> &AlreadySeen,
       LookupModuleOutputCallback LookupModuleOutput);
 
+  llvm::Expected<ModuleDepsGraph>
+  getModuleDependencies(ArrayRef<StringRef> ModuleName,
+                        const std::vector<std::string> &CommandLine,
+                        StringRef CWD,
+                        const llvm::DenseSet<ModuleID> &AlreadySeen,
+                        LookupModuleOutputCallback LookupModuleOutput);
+
   ScanningOutputFormat getScanningFormat() const {
     return Worker.getScanningFormat();
   }
