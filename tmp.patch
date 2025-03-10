@@ -1,0 +1,210 @@
+From 3bf4cf15a64ec1ee9c8cbb212d43a68a65fa1250 Mon Sep 17 00:00:00 2001
+From: Cyndy Ishida <cyndy_ishida@apple.com>
+Date: Mon, 10 Mar 2025 11:21:19 -0700
+Subject: [PATCH] [clang][Dependency Scanning] Pass references to ModuleDeps
+ instead of ModuleID in lookupModuleOutput callbacks
+
+This allows clients to reference more attributes like IsInSysroot
+---
+ .../DependencyScanningTool.h                  |  8 ++---
+ .../DependencyScanningWorker.h                |  2 +-
+ .../DependencyScanningTool.cpp                |  2 +-
+ .../DependencyScanning/ModuleDepCollector.cpp | 18 +++++-----
+ clang/tools/clang-scan-deps/ClangScanDeps.cpp |  9 ++---
+ clang/tools/libclang/CDependencies.cpp        | 33 ++++++++++---------
+ 6 files changed, 37 insertions(+), 35 deletions(-)
+
+diff --git a/clang/include/clang/Tooling/DependencyScanning/DependencyScanningWorker.h b/clang/include/clang/Tooling/DependencyScanning/DependencyScanningWorker.h
+index c874ff0a7483..29416aa16714 100644
+--- a/clang/include/clang/Tooling/DependencyScanning/DependencyScanningWorker.h
++++ b/clang/include/clang/Tooling/DependencyScanning/DependencyScanningWorker.h
+@@ -79,7 +79,7 @@ class DependencyActionController {
+ public:
+   virtual ~DependencyActionController();
+ 
+-  virtual std::string lookupModuleOutput(const ModuleID &ID,
++  virtual std::string lookupModuleOutput(const ModuleDeps &MD,
+                                          ModuleOutputKind Kind) = 0;
+ 
+   virtual llvm::Error initialize(CompilerInstance &ScanInstance,
+diff --git a/clang/lib/Tooling/DependencyScanning/DependencyScanningTool.cpp b/clang/lib/Tooling/DependencyScanning/DependencyScanningTool.cpp
+index 6d100f9cfaf0..e158b89aa21e 100644
+--- a/clang/lib/Tooling/DependencyScanning/DependencyScanningTool.cpp
++++ b/clang/lib/Tooling/DependencyScanning/DependencyScanningTool.cpp
+@@ -244,7 +244,7 @@ llvm::Expected<P1689Rule> DependencyScanningTool::getP1689ModuleDependencyFile(
+   class P1689ActionController : public DependencyActionController {
+   public:
+     // The lookupModuleOutput is for clang modules. P1689 format don't need it.
+-    std::string lookupModuleOutput(const ModuleID &,
++    std::string lookupModuleOutput(const ModuleDeps &,
+                                    ModuleOutputKind Kind) override {
+       return "";
+     }
+diff --git a/clang/lib/Tooling/DependencyScanning/ModuleDepCollector.cpp b/clang/lib/Tooling/DependencyScanning/ModuleDepCollector.cpp
+index fafe98471701..171a94cbe7ed 100644
+--- a/clang/lib/Tooling/DependencyScanning/ModuleDepCollector.cpp
++++ b/clang/lib/Tooling/DependencyScanning/ModuleDepCollector.cpp
+@@ -175,17 +175,17 @@ static std::vector<std::string> splitString(std::string S, char Separator) {
+ void ModuleDepCollector::addOutputPaths(CowCompilerInvocation &CI,
+                                         ModuleDeps &Deps) {
+   CI.getMutFrontendOpts().OutputFile =
+-      Controller.lookupModuleOutput(Deps.ID, ModuleOutputKind::ModuleFile);
++      Controller.lookupModuleOutput(Deps, ModuleOutputKind::ModuleFile);
+   if (!CI.getDiagnosticOpts().DiagnosticSerializationFile.empty())
+     CI.getMutDiagnosticOpts().DiagnosticSerializationFile =
+         Controller.lookupModuleOutput(
+-            Deps.ID, ModuleOutputKind::DiagnosticSerializationFile);
++            Deps, ModuleOutputKind::DiagnosticSerializationFile);
+   if (!CI.getDependencyOutputOpts().OutputFile.empty()) {
+-    CI.getMutDependencyOutputOpts().OutputFile = Controller.lookupModuleOutput(
+-        Deps.ID, ModuleOutputKind::DependencyFile);
++    CI.getMutDependencyOutputOpts().OutputFile =
++        Controller.lookupModuleOutput(Deps, ModuleOutputKind::DependencyFile);
+     CI.getMutDependencyOutputOpts().Targets =
+         splitString(Controller.lookupModuleOutput(
+-                        Deps.ID, ModuleOutputKind::DependencyTargets),
++                        Deps, ModuleOutputKind::DependencyTargets),
+                     '\0');
+     if (!CI.getDependencyOutputOpts().OutputFile.empty() &&
+         CI.getDependencyOutputOpts().Targets.empty()) {
+@@ -373,10 +373,10 @@ void ModuleDepCollector::addModuleMapFiles(
+ void ModuleDepCollector::addModuleFiles(
+     CompilerInvocation &CI, ArrayRef<ModuleID> ClangModuleDeps) const {
+   for (const ModuleID &MID : ClangModuleDeps) {
++    ModuleDeps *MD = ModuleDepsByID.lookup(MID);
+     std::string PCMPath =
+-        Controller.lookupModuleOutput(MID, ModuleOutputKind::ModuleFile);
++        Controller.lookupModuleOutput(*MD, ModuleOutputKind::ModuleFile);
+ 
+-    ModuleDeps *MD = ModuleDepsByID.lookup(MID);
+     assert(MD && "Inconsistent dependency info");
+     if (MD->ModuleCacheKey)
+       CI.getFrontendOpts().ModuleCacheKeys.emplace_back(PCMPath,
+@@ -393,10 +393,10 @@ void ModuleDepCollector::addModuleFiles(
+ void ModuleDepCollector::addModuleFiles(
+     CowCompilerInvocation &CI, ArrayRef<ModuleID> ClangModuleDeps) const {
+   for (const ModuleID &MID : ClangModuleDeps) {
++    ModuleDeps *MD = ModuleDepsByID.lookup(MID);
+     std::string PCMPath =
+-        Controller.lookupModuleOutput(MID, ModuleOutputKind::ModuleFile);
++        Controller.lookupModuleOutput(*MD, ModuleOutputKind::ModuleFile);
+ 
+-    ModuleDeps *MD = ModuleDepsByID.lookup(MID);
+     assert(MD && "Inconsistent dependency info");
+     if (MD->ModuleCacheKey)
+       CI.getMutFrontendOpts().ModuleCacheKeys.emplace_back(PCMPath,
+diff --git a/clang/tools/clang-scan-deps/ClangScanDeps.cpp b/clang/tools/clang-scan-deps/ClangScanDeps.cpp
+index 102fe81198c8..9e1284531066 100644
+--- a/clang/tools/clang-scan-deps/ClangScanDeps.cpp
++++ b/clang/tools/clang-scan-deps/ClangScanDeps.cpp
+@@ -992,9 +992,10 @@ static std::string constructPCMPath(ModuleID MID, StringRef OutputDir) {
+   return std::string(ExplicitPCMPath);
+ }
+ 
+-static std::string lookupModuleOutput(const ModuleID &MID, ModuleOutputKind MOK,
++static std::string lookupModuleOutput(const ModuleDeps &MD,
++                                      ModuleOutputKind MOK,
+                                       StringRef OutputDir) {
+-  std::string PCMPath = constructPCMPath(MID, OutputDir);
++  std::string PCMPath = constructPCMPath(MD.ID, OutputDir);
+   switch (MOK) {
+   case ModuleOutputKind::ModuleFile:
+     return PCMPath;
+@@ -1331,8 +1332,8 @@ int clang_scan_deps_main(int argc, char **argv, const llvm::ToolContext &) {
+       std::string OutputDir(ModuleFilesDir);
+       if (OutputDir.empty())
+         OutputDir = getModuleCachePath(Input->CommandLine);
+-      auto LookupOutput = [&](const ModuleID &MID, ModuleOutputKind MOK) {
+-        return ::lookupModuleOutput(MID, MOK, OutputDir);
++      auto LookupOutput = [&](const ModuleDeps &MD, ModuleOutputKind MOK) {
++        return ::lookupModuleOutput(MD, MOK, OutputDir);
+       };
+ 
+       // Run the tool on it.
+diff --git a/clang/tools/libclang/CDependencies.cpp b/clang/tools/libclang/CDependencies.cpp
+index 59ee48787d95..3fdf48c37f97 100644
+--- a/clang/tools/libclang/CDependencies.cpp
++++ b/clang/tools/libclang/CDependencies.cpp
+@@ -323,7 +323,7 @@ class OutputLookup {
+ public:
+   OutputLookup(void *MLOContext, CXModuleLookupOutputCallback *MLO)
+       : MLOContext(MLOContext), MLO(MLO) {}
+-  std::string lookupModuleOutput(const ModuleID &ID, ModuleOutputKind MOK);
++  std::string lookupModuleOutput(const ModuleDeps &MD, ModuleOutputKind MOK);
+ 
+ private:
+   llvm::DenseMap<ModuleID, std::string> PCMPaths;
+@@ -339,8 +339,8 @@ clang_experimental_DependencyScannerWorker_getFileDependencies_v3(
+     CXModuleDiscoveredCallback *MDC, void *MLOContext,
+     CXModuleLookupOutputCallback *MLO, unsigned, CXString *Error) {
+   OutputLookup OL(MLOContext, MLO);
+-  auto LookupOutputs = [&](const ModuleID &ID, ModuleOutputKind MOK) {
+-    return OL.lookupModuleOutput(ID, MOK);
++  auto LookupOutputs = [&](const ModuleDeps &MD, ModuleOutputKind MOK) {
++    return OL.lookupModuleOutput(MD, MOK);
+   };
+   CXFileDependencies *FDeps = nullptr;
+   CXErrorCode Result = getFileDependencies(
+@@ -370,8 +370,8 @@ CXErrorCode clang_experimental_DependencyScannerWorker_getFileDependencies_v4(
+     CXModuleLookupOutputCallback *MLO, unsigned, CXFileDependenciesList **Out,
+     CXString *Error) {
+   OutputLookup OL(MLOContext, MLO);
+-  auto LookupOutputs = [&](const ModuleID &ID, ModuleOutputKind MOK) {
+-    return OL.lookupModuleOutput(ID, MOK);
++  auto LookupOutputs = [&](const ModuleDeps &MD, ModuleOutputKind MOK) {
++    return OL.lookupModuleOutput(MD, MOK);
+   };
+ 
+   if (!Out)
+@@ -515,8 +515,8 @@ enum CXErrorCode clang_experimental_DependencyScannerWorker_getDepGraph(
+   CXModuleLookupOutputCallback *MLO = Settings.MLO;
+ 
+   OutputLookup OL(MLOContext, MLO);
+-  auto LookupOutputs = [&](const ModuleID &ID, ModuleOutputKind MOK) {
+-    return OL.lookupModuleOutput(ID, MOK);
++  auto LookupOutputs = [&](const ModuleDeps &MD, ModuleOutputKind MOK) {
++    return OL.lookupModuleOutput(MD, MOK);
+   };
+ 
+   if (!Out)
+@@ -734,27 +734,28 @@ CXDiagnosticSet clang_experimental_DepGraph_getDiagnostics(CXDepGraph Graph) {
+   return unwrap(Graph)->getDiagnosticSet();
+ }
+ 
+-static std::string lookupModuleOutput(const ModuleID &ID, ModuleOutputKind MOK,
+-                                      void *MLOContext,
++static std::string lookupModuleOutput(const ModuleDeps &MD,
++                                      ModuleOutputKind MOK, void *MLOContext,
+                                       CXModuleLookupOutputCallback *MLO) {
+   SmallVector<char, 256> Buffer(256);
+-  size_t Len = MLO(MLOContext, ID.ModuleName.c_str(), ID.ContextHash.c_str(),
+-                   wrap(MOK), Buffer.data(), Buffer.size());
++  size_t Len =
++      MLO(MLOContext, MD.ID.ModuleName.c_str(), MD.ID.ContextHash.c_str(),
++          wrap(MOK), Buffer.data(), Buffer.size());
+   if (Len > Buffer.size()) {
+     Buffer.resize(Len);
+-    Len = MLO(MLOContext, ID.ModuleName.c_str(), ID.ContextHash.c_str(),
++    Len = MLO(MLOContext, MD.ID.ModuleName.c_str(), MD.ID.ContextHash.c_str(),
+               wrap(MOK), Buffer.data(), Buffer.size());
+   }
+   return std::string(Buffer.begin(), Len);
+ }
+ 
+-std::string OutputLookup::lookupModuleOutput(const ModuleID &ID,
++std::string OutputLookup::lookupModuleOutput(const ModuleDeps &MD,
+                                              ModuleOutputKind MOK) {
+   if (MOK != ModuleOutputKind::ModuleFile)
+-    return ::lookupModuleOutput(ID, MOK, MLOContext, MLO);
++    return ::lookupModuleOutput(MD, MOK, MLOContext, MLO);
+   // PCM paths are looked up repeatedly, so cache them.
+-  auto PCMPath = PCMPaths.insert({ID, ""});
++  auto PCMPath = PCMPaths.insert({MD.ID, ""});
+   if (PCMPath.second)
+-    PCMPath.first->second = ::lookupModuleOutput(ID, MOK, MLOContext, MLO);
++    PCMPath.first->second = ::lookupModuleOutput(MD, MOK, MLOContext, MLO);
+   return PCMPath.first->second;
+ }
+-- 
+2.39.5 (Apple Git-154)
+
