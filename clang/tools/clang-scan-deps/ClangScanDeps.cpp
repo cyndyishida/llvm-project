@@ -732,6 +732,8 @@ public:
               JOS.attribute("casfs-root-id",
                             StringRef(MD.CASFileSystemRootID->toString()));
 
+            if (MD.IsInSysroot)
+              JOS.attribute("is-in-sysroot", MD.IsInSysroot);
             JOS.attributeArray("clang-module-deps",
                                toJSONSorted(JOS, MD.ClangModuleDeps));
             JOS.attribute("clang-modulemap-file",
