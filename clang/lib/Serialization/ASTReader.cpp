@@ -5694,6 +5694,7 @@ bool ASTReader::readASTFileControlBlock(
   uint64_t InputFilesOffsetBase = 0;
 
   RecordData Record;
+  std::string ModuleDirAsRequested;
   std::string ModuleDir;
   bool DoneWithControlBlock = false;
   SmallString<0> PathBuf;
@@ -5829,9 +5830,12 @@ bool ASTReader::readASTFileControlBlock(
           break;
         case INPUT_FILE:
           bool Overridden = static_cast<bool>(Record[3]);
+          size_t FilenameLen = ModuleDir.size() + Record[7] + 1;
           auto Filename = ResolveImportedPath(PathBuf, Blob, ModuleDir);
-          shouldContinue = Listener.visitInputFile(
-              *Filename, isSystemFile, Overridden, /*IsExplicitModule=*/false);
+          StringRef FilenameAsRequested = Filename->substr(0,FilenameLen);
+          StringRef ExternalFilename = Filename->substr(FilenameLen);
+          shouldContinue = Listener.visitInputFile(FilenameAsRequested, ExternalFilename, 
+              isSystemFile, Overridden, /*IsExplicitModule=*/false);
           break;
         }
         if (!shouldContinue)

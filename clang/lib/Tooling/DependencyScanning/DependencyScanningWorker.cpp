@@ -89,37 +89,79 @@ static bool checkHeaderSearchPaths(const HeaderSearchOptions &HSOpts,
 
 using PrebuiltModuleFilesT = decltype(HeaderSearchOptions::PrebuiltModuleFiles);
 
-/// A listener that collects the imported modules and optionally the input
-/// files.
+/// A listener that collects the imported modules and the input
+/// files. While visiting, collect vfsoverlays and file inputs that determine whether prebuilt modules
+/// fully resolve to the sysroot. 
 class PrebuiltModuleListener : public ASTReaderListener {
 public:
   PrebuiltModuleListener(PrebuiltModuleFilesT &PrebuiltModuleFiles,
                          llvm::SmallVector<std::string> &NewModuleFiles,
-                         PrebuiltModuleVFSMapT &PrebuiltModuleVFSMap,
+                         PrebuiltModulesPropertiesT &PrebuiltModuleProps,
                          const HeaderSearchOptions &HSOpts,
                          const LangOptions &LangOpts, DiagnosticsEngine &Diags)
       : PrebuiltModuleFiles(PrebuiltModuleFiles),
         NewModuleFiles(NewModuleFiles),
-        PrebuiltModuleVFSMap(PrebuiltModuleVFSMap), ExistingHSOpts(HSOpts),
-        ExistingLangOpts(LangOpts), Diags(Diags) {}
+        PrebuiltModuleProps(PrebuiltModuleProps), ExistingHSOpts(HSOpts),
+        ExistingLangOpts(LangOpts), Diags(Diags) {
+
+    if (ExistingHSOpts.Sysroot.empty() ||
+        (llvm::sys::path::root_directory(ExistingHSOpts.Sysroot) ==
+         ExistingHSOpts.Sysroot)) 
+      Sysroot = ""; 
+    else
+      Sysroot = ExistingHSOpts.Sysroot;
+  }
 
   bool needsImportVisitation() const override { return true; }
+  bool needsInputFileVisitation() override { return true; }
+  bool needsSystemInputFileVisitation() override { return true; }
 
   void visitImport(StringRef ModuleName, StringRef Filename) override {
-    if (PrebuiltModuleFiles.insert({ModuleName.str(), Filename.str()}).second)
+    if (PrebuiltModuleFiles.insert({ModuleName.str(), Filename.str()}).second) {
       NewModuleFiles.push_back(Filename.str());
+    }
+
+    if (!PrebuiltModuleProps.contains(Filename)) {
+      PrebuiltModuleProps.insert({Filename, PrebuiltModuleProperties()});
+      PrebuiltModuleProps[Filename].IsInSysroot = !Sysroot.empty(); 
+    }
+    PrebuiltModuleProps[CurrentFile].ModuleFileDependents.insert(Filename.str());
+  }
+
+  bool visitInputFile(StringRef FilenameAsRequested, StringRef ExternalFilename, 
+      bool isSystem, bool isOverridden, bool isExplicitModule) override {
+    if (Sysroot.empty())
+      return false;
+    if (!PrebuiltModuleProps.contains(CurrentFile) ||
+        !PrebuiltModuleProps[CurrentFile].IsInSysroot)
+      return false;
+    if (!isSystem) {
+      PrebuiltModuleProps[CurrentFile].IsInSysroot = false;
+      return false;
+    }
+
+    const StringRef FileToUse = ExternalFilename.empty()? FilenameAsRequested : ExternalFilename; 
+    PrebuiltModuleProps[CurrentFile].IsInSysroot = FileToUse.starts_with(Sysroot);
+    return PrebuiltModuleProps[CurrentFile].IsInSysroot;
   }
 
   void visitModuleFile(StringRef Filename,
-                       serialization::ModuleKind Kind) override {
+                       serialization::ModuleKind Kind) override { 
+    if (PrebuiltModuleProps[CurrentFile].IsInSysroot)
     CurrentFile = Filename;
   }
 
   bool ReadHeaderSearchPaths(const HeaderSearchOptions &HSOpts,
                              bool Complain) override {
     std::vector<std::string> VFSOverlayFiles = HSOpts.VFSOverlayFiles;
-    PrebuiltModuleVFSMap.insert(
-        {CurrentFile, llvm::StringSet<>(VFSOverlayFiles)});
+
+    if (!PrebuiltModuleProps.contains(CurrentFile)) {
+      PrebuiltModuleProps.insert({CurrentFile, PrebuiltModuleProperties()});
+      PrebuiltModuleProps[CurrentFile].IsInSysroot = !Sysroot.empty();
+    }
+    PrebuiltModuleProps[CurrentFile].VFSMap =
+        llvm::StringSet<>(VFSOverlayFiles);
+
     return checkHeaderSearchPaths(
         HSOpts, ExistingHSOpts, Complain ? &Diags : nullptr, ExistingLangOpts);
   }
@@ -127,11 +169,12 @@ public:
 private:
   PrebuiltModuleFilesT &PrebuiltModuleFiles;
   llvm::SmallVector<std::string> &NewModuleFiles;
-  PrebuiltModuleVFSMapT &PrebuiltModuleVFSMap;
+  PrebuiltModulesPropertiesT &PrebuiltModuleProps;
   const HeaderSearchOptions &ExistingHSOpts;
   const LangOptions &ExistingLangOpts;
   DiagnosticsEngine &Diags;
   std::string CurrentFile;
+  std::string Sysroot;
 };
 
 /// Visit the given prebuilt module and collect all of the modules it
@@ -139,12 +182,12 @@ private:
 static bool visitPrebuiltModule(StringRef PrebuiltModuleFilename,
                                 CompilerInstance &CI,
                                 PrebuiltModuleFilesT &ModuleFiles,
-                                PrebuiltModuleVFSMapT &PrebuiltModuleVFSMap,
+                                PrebuiltModulesPropertiesT &PrebuiltModuleProps,
                                 DiagnosticsEngine &Diags) {
   // List of module files to be processed.
   llvm::SmallVector<std::string> Worklist;
-  PrebuiltModuleListener Listener(ModuleFiles, Worklist, PrebuiltModuleVFSMap,
-                                  CI.getHeaderSearchOpts(), CI.getLangOpts(),
+  PrebuiltModuleListener Listener(ModuleFiles, Worklist, PrebuiltModuleProps,
+                                  CI.getHeaderSearchOpts(), CI.getLangOpts(), 
                                   Diags);
 
   Listener.visitModuleFile(PrebuiltModuleFilename,
@@ -158,12 +201,15 @@ static bool visitPrebuiltModule(StringRef PrebuiltModuleFilename,
 
   while (!Worklist.empty()) {
     Listener.visitModuleFile(Worklist.back(), serialization::MK_ExplicitModule);
+    std::string ModuleDep = Worklist.pop_back_val();
     if (ASTReader::readASTFileControlBlock(
-            Worklist.pop_back_val(), CI.getFileManager(), CI.getModuleCache(),
+            ModuleDep, CI.getFileManager(), CI.getModuleCache(),
             CI.getPCHContainerReader(),
             /*FindModuleFileExtensions=*/false, Listener,
-            /*ValidateDiagnosticOptions=*/false))
+            /*ValidateDiagnosticOptions=*/false)) {
+      if 
       return true;
+    }
   }
   return false;
 }
@@ -368,16 +414,18 @@ public:
     auto *FileMgr = ScanInstance.createFileManager(FS);
     ScanInstance.createSourceManager(*FileMgr);
 
-    // Store the list of prebuilt module files into header search options. This
-    // will prevent the implicit build to create duplicate modules and will
-    // force reuse of the existing prebuilt module files instead.
-    PrebuiltModuleVFSMapT PrebuiltModuleVFSMap;
+    // Store a mapping of prebuilt module files and their properties like header
+    // search options. This will prevent the implicit build to create duplicate
+    // modules and will force reuse of the existing prebuilt module files
+    // instead.
+    PrebuiltModulesPropertiesT PrebuiltModulesProps;
+
     if (!ScanInstance.getPreprocessorOpts().ImplicitPCHInclude.empty())
       if (visitPrebuiltModule(
               ScanInstance.getPreprocessorOpts().ImplicitPCHInclude,
               ScanInstance,
               ScanInstance.getHeaderSearchOpts().PrebuiltModuleFiles,
-              PrebuiltModuleVFSMap, ScanInstance.getDiagnostics()))
+              PrebuiltModulesProps, ScanInstance.getDiagnostics()))
         return false;
 
     // Create the dependency collector that will collect the produced
@@ -407,7 +455,7 @@ public:
     case ScanningOutputFormat::Full:
       MDC = std::make_shared<ModuleDepCollector>(
           Service, std::move(Opts), ScanInstance, Consumer, Controller,
-          OriginalInvocation, std::move(PrebuiltModuleVFSMap));
+          OriginalInvocation, std::move(PrebuiltModulesProps));
       ScanInstance.addDependencyCollector(MDC);
       break;
     }

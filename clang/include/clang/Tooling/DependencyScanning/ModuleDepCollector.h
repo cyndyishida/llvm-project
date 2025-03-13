@@ -114,8 +114,12 @@ struct ModuleDeps {
   /// Whether this is a "system" module.
   bool IsSystem;
 
-  /// Whether this is a module where it's dependencies resolve within the
-  /// sysroot.
+  /// Whether this module is fully composed of file & module inputs from the
+  /// sysroot. External paths, as opposed to virtual file paths, are always used
+  /// for computing this value.
+  ///
+  /// This attribute is useful for identifying modules that are unlikely to
+  /// change under an active development and build cycle.
   bool IsInSysroot;
 
   /// The path to the modulemap file which defines this module.
@@ -166,7 +170,13 @@ private:
       BuildInfo;
 };
 
-using PrebuiltModuleVFSMapT = llvm::StringMap<llvm::StringSet<>>;
+struct PrebuiltModuleProperties {
+  llvm::StringSet<> VFSMap;
+  bool IsInSysroot;
+  std::set<std::string> ModuleFileDependents;
+};
+
+using PrebuiltModulesPropertiesT = llvm::StringMap<PrebuiltModuleProperties>;
 
 class ModuleDepCollector;
 
@@ -237,7 +247,7 @@ public:
                      CompilerInstance &ScanInstance, DependencyConsumer &C,
                      DependencyActionController &Controller,
                      CompilerInvocation OriginalCI,
-                     PrebuiltModuleVFSMapT PrebuiltModuleVFSMap);
+                     PrebuiltModulesPropertiesT PrebuiltModulesProps);
 
   void attachToPreprocessor(Preprocessor &PP) override;
   void attachToASTReader(ASTReader &R) override;
@@ -257,8 +267,9 @@ private:
   DependencyConsumer &Consumer;
   /// Callbacks for computing dependency information.
   DependencyActionController &Controller;
-  /// Mapping from prebuilt AST files to their sorted list of VFS overlay files.
-  PrebuiltModuleVFSMapT PrebuiltModuleVFSMap;
+  /// Mapping from prebuilt AST files to their properties to reference during
+  /// dependency collecting.
+  PrebuiltModulesPropertiesT PrebuiltModulesProps;
   /// Path to the main source file.
   std::string MainFile;
   /// Hash identifying the compilation conditions of the current TU.

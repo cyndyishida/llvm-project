@@ -1,0 +1,106 @@
+// REQUIRES: shell
+// RUN: rm -rf %t
+// RUN: split-file %s %t
+// RUN: sed -e "s|DIR|%/t|g" %t/overlay.json.template > %t/overlay.json
+// RUN: sed -e "s|DIR|%/t|g" %t/compile-pch.json.in > %t/compile-pch.json
+// RUN: clang-scan-deps -compilation-database %t/compile-pch.json \
+// RUN:   -j 1 -format experimental-full > %t/deps_pch.db
+// RUN: %clang -x c-header -c %t/prebuild.h -isysroot %t/MacOSX.sdk \
+// RUN:   -I%t/BuildDir -ivfsoverlay %t/overlay.json \
+// RUN:   -I %t/MacOSX.sdk/usr/include -fmodules -fmodules-cache-path=%t/module-cache \
+// RUN:   -fimplicit-module-maps -o %t/prebuild.pch
+// RUN: sed -e "s|DIR|%/t|g" %t/compile-commands.json.in > %t/compile-commands.json
+// RUN: clang-scan-deps -compilation-database %t/compile-commands.json \
+// RUN:   -j 1 -format experimental-full > %t/deps.db
+// RUN: cat %t/deps_pch.db | sed 's:\\\\\?:/:g' | FileCheck %s -DPREFIX=%/t --check-prefix PCH_DEP
+// RUN: cat %t/deps.db | sed 's:\\\\\?:/:g' | FileCheck %s -DPREFIX=%/t 
+
+// PCH_DEP: "is-in-sysroot": true
+// PCH_DEP: "name": "A"
+
+// Verify is-in-sysroot is not in either module dependencies, as all modules rely on a local header.
+// CHECK-NOT: "is-in-sysroot"
+
+
+//--- compile-pch.json.in
+[
+{
+    "directory": "DIR",
+    "command": "clang -x c-header -c DIR/prebuild.h -isysroot DIR/MacOSX.sdk -IDIR/BuildDir -ivfsoverlay DIR/overlay.json -IDIR/MacOSX.sdk/usr/include -fmodules -fmodules-cache-path=DIR/module-cache -fimplicit-module-maps -o DIR/prebuild.pch",
+    "file": "DIR/prebuild.h"
+}
+]
+
+//--- compile-commands.json.in
+[
+{
+    "directory": "DIR",
+    "command": "clang -c DIR/client.c -isysroot DIR/MacOSX.sdk -IDIR/BuildDir -ivfsoverlay DIR/overlay.json -IDIR/MacOSX.sdk/usr/include -fmodules -fmodules-cache-path=DIR/module-cache -fimplicit-module-maps -include-pch DIR/prebuild.pch",
+    "file": "DIR/client.c"
+}
+]
+
+//--- overlay.json.template
+{
+  "version": 0,
+  "case-sensitive": "false",
+  "roots": [
+    {
+          "external-contents": "DIR/BuildDir/B_vfs.h",
+          "name": "DIR/MacOSX.sdk/usr/include/B/B_vfs.h",
+          "type": "file"
+    }
+  ]
+}
+
+//--- MacOSX.sdk/usr/include/A/module.modulemap
+module A [system] {
+  umbrella "."
+}
+
+//--- MacOSX.sdk/usr/include/A/A.h
+typedef int A_type;
+
+//--- MacOSX.sdk/usr/include/B/module.modulemap
+module B [system] {
+  umbrella "."
+}
+
+//--- MacOSX.sdk/usr/include/B/B.h
+#include <B/B_vfs.h>
+
+//--- BuildDir/B_vfs.h
+typedef int local_t;
+
+//--- MacOSX.sdk/usr/include/C/module.modulemap
+module C [system] {
+  umbrella "."
+}
+
+//--- MacOSX.sdk/usr/include/C/C.h
+#include <B/B.h>
+
+//--- MacOSX.sdk/usr/include/Cz/module.modulemap
+module Cz [system] {
+  umbrella "."
+}
+
+//--- MacOSX.sdk/usr/include/Cz/C.h
+#include <C/C.h>
+
+//--- MacOSX.sdk/usr/include/D/module.modulemap
+module D [system] {
+  umbrella "."
+}
+
+//--- MacOSX.sdk/usr/include/D/D.h
+#include <C/C.h>
+
+//--- prebuild.h
+#include <A/A.h>
+#include <C/C.h> // This dependency should not resolve as in sysroot as it transitvely depends on a local header through a vfs.
+
+//--- client.c
+#include <A/A.h>
+#include <Cz/C.h>
+#include <D/D.h>
