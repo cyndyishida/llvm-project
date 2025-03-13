@@ -90,27 +90,20 @@ static bool checkHeaderSearchPaths(const HeaderSearchOptions &HSOpts,
 using PrebuiltModuleFilesT = decltype(HeaderSearchOptions::PrebuiltModuleFiles);
 
 /// A listener that collects the imported modules and the input
-/// files. While visiting, collect vfsoverlays and file inputs that determine whether prebuilt modules
-/// fully resolve to the sysroot. 
+/// files. While visiting, collect vfsoverlays and file inputs that determine
+/// whether prebuilt modules fully resolve to the sysroot.
 class PrebuiltModuleListener : public ASTReaderListener {
 public:
   PrebuiltModuleListener(PrebuiltModuleFilesT &PrebuiltModuleFiles,
                          llvm::SmallVector<std::string> &NewModuleFiles,
                          PrebuiltModulesPropertiesT &PrebuiltModuleProps,
                          const HeaderSearchOptions &HSOpts,
-                         const LangOptions &LangOpts, DiagnosticsEngine &Diags)
+                         const LangOptions &LangOpts, DiagnosticsEngine &Diags, 
+                         const std::string& ExistingSysroot)
       : PrebuiltModuleFiles(PrebuiltModuleFiles),
         NewModuleFiles(NewModuleFiles),
         PrebuiltModuleProps(PrebuiltModuleProps), ExistingHSOpts(HSOpts),
-        ExistingLangOpts(LangOpts), Diags(Diags) {
-
-    if (ExistingHSOpts.Sysroot.empty() ||
-        (llvm::sys::path::root_directory(ExistingHSOpts.Sysroot) ==
-         ExistingHSOpts.Sysroot)) 
-      Sysroot = ""; 
-    else
-      Sysroot = ExistingHSOpts.Sysroot;
-  }
+        ExistingLangOpts(LangOpts), Diags(Diags), ExistingSysroot(ExistingSysroot) {}
 
   bool needsImportVisitation() const override { return true; }
   bool needsInputFileVisitation() override { return true; }
@@ -121,44 +114,43 @@ public:
       NewModuleFiles.push_back(Filename.str());
     }
 
-    if (!PrebuiltModuleProps.contains(Filename)) {
-      PrebuiltModuleProps.insert({Filename, PrebuiltModuleProperties()});
-      PrebuiltModuleProps[Filename].IsInSysroot = !Sysroot.empty(); 
-    }
-    PrebuiltModuleProps[CurrentFile].ModuleFileDependents.insert(Filename.str());
+    if(PrebuiltModuleProps.try_emplace(Filename).second)
+      PrebuiltModuleProps[Filename].setIsInSysroot(!ExistingSysroot.empty());
+
+    if (auto It = PrebuiltModuleProps.find(CurrentFile); It != PrebuiltModuleProps.end() && CurrentFile != Filename)
+      PrebuiltModuleProps[Filename].ModuleFileDependents.insert(It->getKey());
   }
 
-  bool visitInputFile(StringRef FilenameAsRequested, StringRef ExternalFilename, 
-      bool isSystem, bool isOverridden, bool isExplicitModule) override {
-    if (Sysroot.empty())
+  bool visitInputFile(StringRef FilenameAsRequested, StringRef ExternalFilename,
+                      bool isSystem, bool isOverridden,
+                      bool isExplicitModule) override {
+    if (ExistingSysroot.empty())
       return false;
     if (!PrebuiltModuleProps.contains(CurrentFile) ||
         !PrebuiltModuleProps[CurrentFile].IsInSysroot)
       return false;
-    if (!isSystem) {
-      PrebuiltModuleProps[CurrentFile].IsInSysroot = false;
-      return false;
-    }
 
-    const StringRef FileToUse = ExternalFilename.empty()? FilenameAsRequested : ExternalFilename; 
-    PrebuiltModuleProps[CurrentFile].IsInSysroot = FileToUse.starts_with(Sysroot);
+    const StringRef FileToUse =
+        ExternalFilename.empty() ? FilenameAsRequested : ExternalFilename;
+
+    PrebuiltModuleProps[CurrentFile].setIsInSysroot(FileToUse.starts_with(ExistingSysroot));
     return PrebuiltModuleProps[CurrentFile].IsInSysroot;
   }
 
   void visitModuleFile(StringRef Filename,
-                       serialization::ModuleKind Kind) override { 
-    if (PrebuiltModuleProps[CurrentFile].IsInSysroot)
+                       serialization::ModuleKind Kind) override {
+    if (PrebuiltModuleProps.contains(CurrentFile) && !PrebuiltModuleProps[CurrentFile].IsInSysroot)
+      PrebuiltModuleProps[CurrentFile].setIsInSysrootForDependents(PrebuiltModuleProps);
     CurrentFile = Filename;
   }
 
   bool ReadHeaderSearchPaths(const HeaderSearchOptions &HSOpts,
                              bool Complain) override {
     std::vector<std::string> VFSOverlayFiles = HSOpts.VFSOverlayFiles;
+    
+    if(PrebuiltModuleProps.try_emplace(CurrentFile).second)
+      PrebuiltModuleProps[CurrentFile].setIsInSysroot(!ExistingSysroot.empty());
 
-    if (!PrebuiltModuleProps.contains(CurrentFile)) {
-      PrebuiltModuleProps.insert({CurrentFile, PrebuiltModuleProperties()});
-      PrebuiltModuleProps[CurrentFile].IsInSysroot = !Sysroot.empty();
-    }
     PrebuiltModuleProps[CurrentFile].VFSMap =
         llvm::StringSet<>(VFSOverlayFiles);
 
@@ -174,7 +166,7 @@ private:
   const LangOptions &ExistingLangOpts;
   DiagnosticsEngine &Diags;
   std::string CurrentFile;
-  std::string Sysroot;
+  const std::string ExistingSysroot;
 };
 
 /// Visit the given prebuilt module and collect all of the modules it
@@ -186,9 +178,15 @@ static bool visitPrebuiltModule(StringRef PrebuiltModuleFilename,
                                 DiagnosticsEngine &Diags) {
   // List of module files to be processed.
   llvm::SmallVector<std::string> Worklist;
+ 
+  // 
+  std::string SysrootToUse(CI.getHeaderSearchOpts().Sysroot);  
+  if (SysrootToUse.empty() || (llvm::sys::path::root_directory(SysrootToUse) == SysrootToUse))
+      SysrootToUse = "";
+
   PrebuiltModuleListener Listener(ModuleFiles, Worklist, PrebuiltModuleProps,
-                                  CI.getHeaderSearchOpts(), CI.getLangOpts(), 
-                                  Diags);
+                                  CI.getHeaderSearchOpts(), CI.getLangOpts(),
+                                  Diags, SysrootToUse);
 
   Listener.visitModuleFile(PrebuiltModuleFilename,
                            serialization::MK_ExplicitModule);
@@ -206,10 +204,8 @@ static bool visitPrebuiltModule(StringRef PrebuiltModuleFilename,
             ModuleDep, CI.getFileManager(), CI.getModuleCache(),
             CI.getPCHContainerReader(),
             /*FindModuleFileExtensions=*/false, Listener,
-            /*ValidateDiagnosticOptions=*/false)) {
-      if 
-      return true;
-    }
+            /*ValidateDiagnosticOptions=*/false))
+        return true;
   }
   return false;
 }

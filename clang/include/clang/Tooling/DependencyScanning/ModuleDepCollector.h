@@ -170,13 +170,33 @@ private:
       BuildInfo;
 };
 
+struct PrebuiltModuleProperties;
+using PrebuiltModulesPropertiesT = llvm::StringMap<PrebuiltModuleProperties>;
 struct PrebuiltModuleProperties {
   llvm::StringSet<> VFSMap;
-  bool IsInSysroot;
-  std::set<std::string> ModuleFileDependents;
+  bool IsInSysroot = true;
+  std::set<StringRef> ModuleFileDependents;
+
+  // return t says whether it was actually updated.
+  bool setIsInSysroot(bool V = false) {
+    // Cannot reset sysroot once its false.
+    if (!IsInSysroot)
+      return false;
+    IsInSysroot = V;
+    return true;
+  }
+
+  void setIsInSysrootForDependents(PrebuiltModulesPropertiesT& Props) {
+    setIsInSysroot();
+    for (const auto Dep : ModuleFileDependents ) {
+      if (!Props[Dep].IsInSysroot)
+        return;
+      Props[Dep].setIsInSysrootForDependents(Props);
+    }
+  
+  }
 };
 
-using PrebuiltModulesPropertiesT = llvm::StringMap<PrebuiltModuleProperties>;
 
 class ModuleDepCollector;
 
@@ -247,7 +267,7 @@ public:
                      CompilerInstance &ScanInstance, DependencyConsumer &C,
                      DependencyActionController &Controller,
                      CompilerInvocation OriginalCI,
-                     PrebuiltModulesPropertiesT PrebuiltModulesProps);
+                     const PrebuiltModulesPropertiesT PrebuiltModulesProps);
 
   void attachToPreprocessor(Preprocessor &PP) override;
   void attachToASTReader(ASTReader &R) override;
@@ -269,7 +289,7 @@ private:
   DependencyActionController &Controller;
   /// Mapping from prebuilt AST files to their properties to reference during
   /// dependency collecting.
-  PrebuiltModulesPropertiesT PrebuiltModulesProps;
+  const PrebuiltModulesPropertiesT PrebuiltModulesProps;
   /// Path to the main source file.
   std::string MainFile;
   /// Hash identifying the compilation conditions of the current TU.

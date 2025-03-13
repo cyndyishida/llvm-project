@@ -236,17 +236,19 @@ public:
                               bool isOverridden, bool isExplicitModule) {
     return true;
   }
-  
+
   /// if \c needsInputFileVisitation returns true, this is called for
   /// each non-system input file of the AST File. If
   /// \c needsSystemInputFileVisitation is true, then it is called for all
   /// system input files as well.
-  /// Override this member function when the input file contains both the virtual
-  /// and external paths, for example when deserializing input files from AST files.
+  /// Override this member function when the input file contains both the
+  /// virtual and external paths, for example when deserializing input files
+  /// from AST files.
   ///
   /// \returns true to continue receiving the next input file, false to stop.
-  virtual bool visitInputFile(StringRef FilenameAsRequested, StringRef Filename, bool isSystem,
-                              bool isOverridden, bool isExplicitModule) {
+  virtual bool visitInputFile(StringRef FilenameAsRequested, StringRef Filename,
+                              bool isSystem, bool isOverridden,
+                              bool isExplicitModule) {
     return true;
   }
 

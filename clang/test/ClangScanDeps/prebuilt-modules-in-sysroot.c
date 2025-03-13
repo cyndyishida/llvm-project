@@ -72,21 +72,30 @@ module B [system] {
 //--- BuildDir/B_vfs.h
 typedef int local_t;
 
+//--- MacOSX.sdk/usr/include/sys/sys.h
+typedef int sys_t_m;
+
+//--- MacOSX.sdk/usr/include/sys/module.modulemap
+module sys [system] {
+  umbrella "."
+}
+
+//--- MacOSX.sdk/usr/include/B_transitive/B.h
+#include <B/B.h>
+
+//--- MacOSX.sdk/usr/include/B_transitive/module.modulemap
+module B_transitive [system] {
+  umbrella "."
+}
+
 //--- MacOSX.sdk/usr/include/C/module.modulemap
 module C [system] {
   umbrella "."
 }
 
 //--- MacOSX.sdk/usr/include/C/C.h
-#include <B/B.h>
+#include <B_transitive/B.h>
 
-//--- MacOSX.sdk/usr/include/Cz/module.modulemap
-module Cz [system] {
-  umbrella "."
-}
-
-//--- MacOSX.sdk/usr/include/Cz/C.h
-#include <C/C.h>
 
 //--- MacOSX.sdk/usr/include/D/module.modulemap
 module D [system] {
@@ -98,9 +107,8 @@ module D [system] {
 
 //--- prebuild.h
 #include <A/A.h>
-#include <C/C.h> // This dependency should not resolve as in sysroot as it transitvely depends on a local header through a vfs.
+#include <C/C.h> 
 
 //--- client.c
 #include <A/A.h>
-#include <Cz/C.h>
 #include <D/D.h>

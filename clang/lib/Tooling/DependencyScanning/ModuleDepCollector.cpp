@@ -840,8 +840,11 @@ void ModuleDepCollectorPP::addModulePrebuiltDeps(
         if (SeenSubmodules.insert(Import->getTopLevelModule()).second) {
           MD.PrebuiltModuleDeps.emplace_back(Import->getTopLevelModule());
           if (MD.IsInSysroot) {
-            auto PrebuiltModulePropIt = MDC.PrebuiltModulesProps.find(MD.PrebuiltModuleDeps.back().PCMFile);
-            MD.IsInSysroot = (PrebuiltModulePropIt != MDC.PrebuiltModulesProps.end()) && PrebuiltModulePropIt->second.IsInSysroot;
+            auto PrebuiltModulePropIt = MDC.PrebuiltModulesProps.find(
+                MD.PrebuiltModuleDeps.back().PCMFile);
+            MD.IsInSysroot =
+                (PrebuiltModulePropIt != MDC.PrebuiltModulesProps.end()) &&
+                PrebuiltModulePropIt->second.IsInSysroot;
           }
         }
 }
@@ -905,7 +908,7 @@ ModuleDepCollector::ModuleDepCollector(
     std::unique_ptr<DependencyOutputOptions> Opts,
     CompilerInstance &ScanInstance, DependencyConsumer &C,
     DependencyActionController &Controller, CompilerInvocation OriginalCI,
-    PrebuiltModulesPropertiesT PrebuiltModulesProps)
+    const PrebuiltModulesPropertiesT PrebuiltModulesProps)
     : Service(Service), ScanInstance(ScanInstance), Consumer(C),
       Controller(Controller),
       PrebuiltModulesProps(std::move(PrebuiltModulesProps)),
