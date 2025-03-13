@@ -39,10 +39,20 @@ const std::vector<std::string> &ModuleDeps::getBuildArguments() {
   return std::get<std::vector<std::string>>(BuildInfo);
 }
 
+void PrebuiltModuleASTAttrs::updateDependentsNotInSysroot(
+    PrebuiltModulesASTAttrsT &PrebuiltModulesMap) {
+  setIsInSysroot();
+  for (const auto Dep : ModuleFileDependents) {
+    if (!PrebuiltModulesMap[Dep].isInSysroot())
+      return;
+    PrebuiltModulesMap[Dep].updateDependentsNotInSysroot(PrebuiltModulesMap);
+  }
+}
+
 static void
 optimizeHeaderSearchOpts(HeaderSearchOptions &Opts, ASTReader &Reader,
                          const serialization::ModuleFile &MF,
-                         const PrebuiltModuleVFSMapT &PrebuiltModuleVFSMap,
+                         const PrebuiltModulesASTAttrsT &PrebuiltModulesProps,
                          ScanningOptimizations OptimizeArgs) {
   if (any(OptimizeArgs & ScanningOptimizations::HeaderSearch)) {
     // Only preserve search paths that were used during the dependency scan.
@@ -87,11 +97,12 @@ optimizeHeaderSearchOpts(HeaderSearchOptions &Opts, ASTReader &Reader,
           } else {
             // This is not an implicitly built module, so it may have different
             // VFS options. Fall back to a string comparison instead.
-            auto VFSMap = PrebuiltModuleVFSMap.find(MF->FileName);
-            if (VFSMap == PrebuiltModuleVFSMap.end())
+            auto PrebuiltModulePropIt = PrebuiltModulesProps.find(MF->FileName);
+            if (PrebuiltModulePropIt == PrebuiltModulesProps.end())
               return;
             for (std::size_t I = 0, E = VFSOverlayFiles.size(); I != E; ++I) {
-              if (VFSMap->second.contains(VFSOverlayFiles[I]))
+              if (PrebuiltModulePropIt->second.getVFS().contains(
+                      VFSOverlayFiles[I]))
                 VFSUsage[I] = true;
             }
           }
@@ -774,7 +785,7 @@ ModuleDepCollectorPP::handleTopLevelModule(const Module *M) {
                      ScanningOptimizations::VFS)))
               optimizeHeaderSearchOpts(BuildInvocation.getMutHeaderSearchOpts(),
                                        *MDC.ScanInstance.getASTReader(), *MF,
-                                       MDC.PrebuiltModuleVFSMap,
+                                       MDC.PrebuiltModulesProps,
                                        MDC.Service.getOptimizeArgs());
 
             if (any(MDC.Service.getOptimizeArgs() &
@@ -836,8 +847,16 @@ void ModuleDepCollectorPP::addModulePrebuiltDeps(
   for (const Module *Import : M->Imports)
     if (Import->getTopLevelModule() != M->getTopLevelModule())
       if (MDC.isPrebuiltModule(Import->getTopLevelModule()))
-        if (SeenSubmodules.insert(Import->getTopLevelModule()).second)
+        if (SeenSubmodules.insert(Import->getTopLevelModule()).second) {
           MD.PrebuiltModuleDeps.emplace_back(Import->getTopLevelModule());
+          if (MD.IsInSysroot) {
+            auto PrebuiltModulePropIt = MDC.PrebuiltModulesProps.find(
+                MD.PrebuiltModuleDeps.back().PCMFile);
+            MD.IsInSysroot =
+                (PrebuiltModulePropIt != MDC.PrebuiltModulesProps.end()) &&
+                PrebuiltModulePropIt->second.isInSysroot();
+          }
+        }
 }
 
 void ModuleDepCollectorPP::addAllSubmoduleDeps(
@@ -899,10 +918,10 @@ ModuleDepCollector::ModuleDepCollector(
     std::unique_ptr<DependencyOutputOptions> Opts,
     CompilerInstance &ScanInstance, DependencyConsumer &C,
     DependencyActionController &Controller, CompilerInvocation OriginalCI,
-    PrebuiltModuleVFSMapT PrebuiltModuleVFSMap)
+    const PrebuiltModulesASTAttrsT PrebuiltModulesProps)
     : Service(Service), ScanInstance(ScanInstance), Consumer(C),
       Controller(Controller),
-      PrebuiltModuleVFSMap(std::move(PrebuiltModuleVFSMap)),
+      PrebuiltModulesProps(std::move(PrebuiltModulesProps)),
       Opts(std::move(Opts)),
       CommonInvocation(
           makeCommonInvocationForModuleBuild(std::move(OriginalCI))) {}

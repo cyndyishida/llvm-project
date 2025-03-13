@@ -33,6 +33,7 @@ namespace dependencies {
 
 class DependencyActionController;
 class DependencyConsumer;
+class PrebuiltModuleASTAttrs;
 
 /// Modular dependency that has already been built prior to the dependency scan.
 struct PrebuiltModuleDep {
@@ -44,6 +45,45 @@ struct PrebuiltModuleDep {
       : ModuleName(M->getTopLevelModuleName()),
         PCMFile(M->getASTFile()->getName()),
         ModuleMapFile(M->PresumedModuleMapFile) {}
+};
+
+/// Attributes loaded from AST files of prebuilt modules collected prior to
+/// ModuleDepCollector creation.
+using PrebuiltModulesASTAttrsT = llvm::StringMap<PrebuiltModuleASTAttrs>;
+class PrebuiltModuleASTAttrs {
+public:
+  /// When a module is discovered to not be in the sysroot, traverse & update
+  /// all modules that depend on it.
+  void
+  updateDependentsNotInSysroot(PrebuiltModulesASTAttrsT &PrebuiltModulesMap);
+
+  /// Read-only access to whether the module is in the sysroot.
+  bool isInSysroot() const { return IsInSysroot; }
+
+  /// Read-only access to vfs map files.
+  const llvm::StringSet<> &getVFS() const { return VFSMap; }
+
+  /// Update the VFSMap to the one discovered from serializing the AST file.
+  void setVFS(llvm::StringSet<> &&VFS) { VFSMap = std::move(VFS); }
+
+  /// Add a direct dependent module file, so it can be updated if the current
+  /// module is not in the sysroot.
+  void addDependent(StringRef ModuleFile) {
+    ModuleFileDependents.insert(ModuleFile);
+  }
+
+  /// Update whether the prebuilt module resolves in the sysroot.
+  void setIsInSysroot(bool V = false) {
+    // Cannot reset attribute once it's false.
+    if (!IsInSysroot)
+      return;
+    IsInSysroot = V;
+  }
+
+private:
+  llvm::StringSet<> VFSMap;
+  bool IsInSysroot = true;
+  std::set<StringRef> ModuleFileDependents;
 };
 
 /// This is used to identify a specific module.
@@ -170,8 +210,6 @@ private:
       BuildInfo;
 };
 
-using PrebuiltModuleVFSMapT = llvm::StringMap<llvm::StringSet<>>;
-
 class ModuleDepCollector;
 
 /// Callback that records textual includes and direct modular includes/imports
@@ -241,7 +279,7 @@ public:
                      CompilerInstance &ScanInstance, DependencyConsumer &C,
                      DependencyActionController &Controller,
                      CompilerInvocation OriginalCI,
-                     PrebuiltModuleVFSMapT PrebuiltModuleVFSMap);
+                     const PrebuiltModulesASTAttrsT PrebuiltModulesProps);
 
   void attachToPreprocessor(Preprocessor &PP) override;
   void attachToASTReader(ASTReader &R) override;
@@ -261,8 +299,9 @@ private:
   DependencyConsumer &Consumer;
   /// Callbacks for computing dependency information.
   DependencyActionController &Controller;
-  /// Mapping from prebuilt AST files to their sorted list of VFS overlay files.
-  PrebuiltModuleVFSMapT PrebuiltModuleVFSMap;
+  /// Mapping from prebuilt AST filepaths to their attributes referenced during
+  /// dependency collecting.
+  const PrebuiltModulesASTAttrsT PrebuiltModulesProps;
   /// Path to the main source file.
   std::string MainFile;
   /// Hash identifying the compilation conditions of the current TU.

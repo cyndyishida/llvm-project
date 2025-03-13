@@ -89,37 +89,75 @@ static bool checkHeaderSearchPaths(const HeaderSearchOptions &HSOpts,
 
 using PrebuiltModuleFilesT = decltype(HeaderSearchOptions::PrebuiltModuleFiles);
 
-/// A listener that collects the imported modules and optionally the input
-/// files.
+/// A listener that collects the imported modules and the input
+/// files. While visiting, collect vfsoverlays and file inputs that determine
+/// whether prebuilt modules fully resolve to the sysroot.
 class PrebuiltModuleListener : public ASTReaderListener {
 public:
   PrebuiltModuleListener(PrebuiltModuleFilesT &PrebuiltModuleFiles,
                          llvm::SmallVector<std::string> &NewModuleFiles,
-                         PrebuiltModuleVFSMapT &PrebuiltModuleVFSMap,
+                         PrebuiltModulesASTAttrsT &PrebuiltModuleProps,
                          const HeaderSearchOptions &HSOpts,
-                         const LangOptions &LangOpts, DiagnosticsEngine &Diags)
+                         const LangOptions &LangOpts, DiagnosticsEngine &Diags,
+                         const std::string &ExistingSysroot)
       : PrebuiltModuleFiles(PrebuiltModuleFiles),
         NewModuleFiles(NewModuleFiles),
-        PrebuiltModuleVFSMap(PrebuiltModuleVFSMap), ExistingHSOpts(HSOpts),
-        ExistingLangOpts(LangOpts), Diags(Diags) {}
+        PrebuiltModuleProps(PrebuiltModuleProps), ExistingHSOpts(HSOpts),
+        ExistingLangOpts(LangOpts), Diags(Diags),
+        ExistingSysroot(ExistingSysroot) {}
 
   bool needsImportVisitation() const override { return true; }
+  bool needsInputFileVisitation() override { return true; }
+  bool needsSystemInputFileVisitation() override { return true; }
 
   void visitImport(StringRef ModuleName, StringRef Filename) override {
     if (PrebuiltModuleFiles.insert({ModuleName.str(), Filename.str()}).second)
       NewModuleFiles.push_back(Filename.str());
+
+    if(PrebuiltModuleProps.try_emplace(Filename).second)
+      PrebuiltModuleProps[Filename].setIsInSysroot(!ExistingSysroot.empty());
+
+    if (auto It = PrebuiltModuleProps.find(CurrentFile);
+        It != PrebuiltModuleProps.end() && CurrentFile != Filename)
+      PrebuiltModuleProps[Filename].addDependent(It->getKey());
+  }
+
+  bool visitInputFile(StringRef FilenameAsRequested, StringRef ExternalFilename,
+                      bool isSystem, bool isOverridden,
+                      bool isExplicitModule) override {
+    if (ExistingSysroot.empty())
+      return false;
+    if (!PrebuiltModuleProps.contains(CurrentFile) ||
+        !PrebuiltModuleProps[CurrentFile].isInSysroot())
+      return false;
+
+    const StringRef FileToUse =
+        ExternalFilename.empty() ? FilenameAsRequested : ExternalFilename;
+
+    PrebuiltModuleProps[CurrentFile].setIsInSysroot(FileToUse.starts_with(ExistingSysroot));
+    return PrebuiltModuleProps[CurrentFile].isInSysroot();
   }
 
   void visitModuleFile(StringRef Filename,
                        serialization::ModuleKind Kind) override {
+    // The previous CurrentFile is done being traversed. If it is not in the
+    // sysroot, update any of it's transitive dependents.
+    if (PrebuiltModuleProps.contains(CurrentFile) &&
+        !PrebuiltModuleProps[CurrentFile].isInSysroot())
+      PrebuiltModuleProps[CurrentFile].updateDependentsNotInSysroot(
+          PrebuiltModuleProps);
     CurrentFile = Filename;
   }
 
   bool ReadHeaderSearchPaths(const HeaderSearchOptions &HSOpts,
                              bool Complain) override {
     std::vector<std::string> VFSOverlayFiles = HSOpts.VFSOverlayFiles;
-    PrebuiltModuleVFSMap.insert(
-        {CurrentFile, llvm::StringSet<>(VFSOverlayFiles)});
+    
+    if(PrebuiltModuleProps.try_emplace(CurrentFile).second)
+      PrebuiltModuleProps[CurrentFile].setIsInSysroot(!ExistingSysroot.empty());
+
+    PrebuiltModuleProps[CurrentFile].setVFS(llvm::StringSet<>(VFSOverlayFiles));
+
     return checkHeaderSearchPaths(
         HSOpts, ExistingHSOpts, Complain ? &Diags : nullptr, ExistingLangOpts);
   }
@@ -127,11 +165,12 @@ public:
 private:
   PrebuiltModuleFilesT &PrebuiltModuleFiles;
   llvm::SmallVector<std::string> &NewModuleFiles;
-  PrebuiltModuleVFSMapT &PrebuiltModuleVFSMap;
+  PrebuiltModulesASTAttrsT &PrebuiltModuleProps;
   const HeaderSearchOptions &ExistingHSOpts;
   const LangOptions &ExistingLangOpts;
   DiagnosticsEngine &Diags;
   std::string CurrentFile;
+  const std::string ExistingSysroot;
 };
 
 /// Visit the given prebuilt module and collect all of the modules it
@@ -139,13 +178,19 @@ private:
 static bool visitPrebuiltModule(StringRef PrebuiltModuleFilename,
                                 CompilerInstance &CI,
                                 PrebuiltModuleFilesT &ModuleFiles,
-                                PrebuiltModuleVFSMapT &PrebuiltModuleVFSMap,
+                                PrebuiltModulesASTAttrsT &PrebuiltModuleProps,
                                 DiagnosticsEngine &Diags) {
+
+  std::string SysrootToUse(CI.getHeaderSearchOpts().Sysroot);  
+  if (SysrootToUse.empty() || (llvm::sys::path::root_directory(SysrootToUse) == SysrootToUse))
+      SysrootToUse = "";
+
   // List of module files to be processed.
   llvm::SmallVector<std::string> Worklist;
-  PrebuiltModuleListener Listener(ModuleFiles, Worklist, PrebuiltModuleVFSMap,
+
+  PrebuiltModuleListener Listener(ModuleFiles, Worklist, PrebuiltModuleProps,
                                   CI.getHeaderSearchOpts(), CI.getLangOpts(),
-                                  Diags);
+                                  Diags, SysrootToUse);
 
   Listener.visitModuleFile(PrebuiltModuleFilename,
                            serialization::MK_ExplicitModule);
@@ -368,16 +413,18 @@ public:
     auto *FileMgr = ScanInstance.createFileManager(FS);
     ScanInstance.createSourceManager(*FileMgr);
 
-    // Store the list of prebuilt module files into header search options. This
-    // will prevent the implicit build to create duplicate modules and will
-    // force reuse of the existing prebuilt module files instead.
-    PrebuiltModuleVFSMapT PrebuiltModuleVFSMap;
+    // Store a mapping of prebuilt module files and their properties like header
+    // search options. This will prevent the implicit build to create duplicate
+    // modules and will force reuse of the existing prebuilt module files
+    // instead.
+    PrebuiltModulesASTAttrsT PrebuiltModulesASTMap;
+
     if (!ScanInstance.getPreprocessorOpts().ImplicitPCHInclude.empty())
       if (visitPrebuiltModule(
               ScanInstance.getPreprocessorOpts().ImplicitPCHInclude,
               ScanInstance,
               ScanInstance.getHeaderSearchOpts().PrebuiltModuleFiles,
-              PrebuiltModuleVFSMap, ScanInstance.getDiagnostics()))
+              PrebuiltModulesASTMap, ScanInstance.getDiagnostics()))
         return false;
 
     // Create the dependency collector that will collect the produced
@@ -407,7 +454,7 @@ public:
     case ScanningOutputFormat::Full:
       MDC = std::make_shared<ModuleDepCollector>(
           Service, std::move(Opts), ScanInstance, Consumer, Controller,
-          OriginalInvocation, std::move(PrebuiltModuleVFSMap));
+          OriginalInvocation, std::move(PrebuiltModulesASTMap));
       ScanInstance.addDependencyCollector(MDC);
       break;
     }
