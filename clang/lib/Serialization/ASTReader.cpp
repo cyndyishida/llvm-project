@@ -3318,10 +3318,10 @@ ASTReader::ReadControlBlock(ModuleFile &F,
       if ((ClientLoadCapabilities & ARR_OutOfDate) == 0)
         Capabilities &= ~ARR_Missing;
 
+      ModuleExpectations ME{StoredModTime, StoredSize};
       // Load the AST file.
       auto Result = ReadASTCore(ImportedFile, ImportedKind, ImportLoc, &F,
-                                Loaded, StoredSize, StoredModTime,
-                                StoredSignature, Capabilities);
+                                Loaded, ME, StoredSignature, Capabilities);
 
       // Check the AST we just read from ImportedFile contains a different
       // module than we expected (ImportedName). This can occur for C++20
@@ -4718,8 +4718,8 @@ ASTReader::ASTReadResult ASTReader::ReadAST(StringRef FileName, ModuleKind Type,
   SmallVector<ImportedModule, 4> Loaded;
   if (ASTReadResult ReadResult =
           ReadASTCore(FileName, Type, ImportLoc,
-                      /*ImportedBy=*/nullptr, Loaded, 0, 0, ASTFileSignature(),
-                      ClientLoadCapabilities)) {
+                      /*ImportedBy=*/nullptr, Loaded, ModuleExpectations{},
+                      ASTFileSignature(), ClientLoadCapabilities)) {
     ModuleMgr.removeModules(ModuleMgr.begin() + NumModules);
 
     // If we find that any modules are unusable, the global index is going
@@ -4970,22 +4970,16 @@ static unsigned moduleKindForDiagnostic(ModuleKind Kind) {
   llvm_unreachable("unknown module kind");
 }
 
-ASTReader::ASTReadResult
-ASTReader::ReadASTCore(StringRef FileName,
-                       ModuleKind Type,
-                       SourceLocation ImportLoc,
-                       ModuleFile *ImportedBy,
-                       SmallVectorImpl<ImportedModule> &Loaded,
-                       off_t ExpectedSize, time_t ExpectedModTime,
-                       ASTFileSignature ExpectedSignature,
-                       unsigned ClientLoadCapabilities) {
+ASTReader::ASTReadResult ASTReader::ReadASTCore(
+    StringRef FileName, ModuleKind Type, SourceLocation ImportLoc,
+    ModuleFile *ImportedBy, SmallVectorImpl<ImportedModule> &Loaded,
+    ModuleManager::ModuleExpectations ME, ASTFileSignature ExpectedSignature,
+    unsigned ClientLoadCapabilities) {
   ModuleFile *M;
   std::string ErrorStr;
-  ModuleManager::AddModuleResult AddResult
-    = ModuleMgr.addModule(FileName, Type, ImportLoc, ImportedBy,
-                          getGeneration(), ExpectedSize, ExpectedModTime,
-                          ExpectedSignature, readASTFileSignature,
-                          M, ErrorStr);
+  ModuleManager::AddModuleResult AddResult = ModuleMgr.addModule(
+      FileName, Type, ImportLoc, ImportedBy, getGeneration(), std::move(ME),
+      ExpectedSignature, readASTFileSignature, M, ErrorStr);
 
   switch (AddResult) {
   case ModuleManager::AlreadyLoaded:

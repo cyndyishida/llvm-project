@@ -96,37 +96,36 @@ static void updateModuleImports(ModuleFile &MF, ModuleFile *ImportedBy,
   }
 }
 
-ModuleManager::AddModuleResult
-ModuleManager::addModule(StringRef FileName, ModuleKind Type,
-                         SourceLocation ImportLoc, ModuleFile *ImportedBy,
-                         unsigned Generation,
-                         off_t ExpectedSize, time_t ExpectedModTime,
-                         ASTFileSignature ExpectedSignature,
-                         ASTFileSignatureReader ReadSignature,
-                         ModuleFile *&Module,
-                         std::string &ErrorStr) {
+ModuleManager::AddModuleResult ModuleManager::addModule(
+    StringRef FileName, ModuleKind Type, SourceLocation ImportLoc,
+    ModuleFile *ImportedBy, unsigned Generation, ModuleExpectations ME,
+    ASTFileSignature ExpectedSignature, ASTFileSignatureReader ReadSignature,
+    ModuleFile *&Module, std::string &ErrorStr) {
   Module = nullptr;
 
   // Look for the file entry. This only fails if the expected size or
   // modification time differ.
   OptionalFileEntryRef Entry;
+
   if (Type == MK_ExplicitModule || Type == MK_PrebuiltModule) {
     // If we're not expecting to pull this file out of the module cache, it
     // might have a different mtime due to being moved across filesystems in
     // a distributed build. The size must still match, though. (As must the
     // contents, but we can't check that.)
-    ExpectedModTime = 0;
+    ME.ModTime = std::nullopt;
   }
-  // Note: ExpectedSize and ExpectedModTime will be 0 for MK_ImplicitModule
+  // Note: ExpectedSize and ExpectedModTime will be empty for MK_ImplicitModule
   // when using an ASTFileSignature.
-  if (lookupModuleFile(FileName, ExpectedSize, ExpectedModTime, Entry)) {
-    ErrorStr = "module file has a different size or mtime than expected";
-    return OutOfDate;
-  }
-
-  if (!Entry) {
-    ErrorStr = "module file not found";
-    return Missing;
+  if (auto Err = lookupModuleFile(FileName, ME, Entry)) {
+    AddModuleResult LookupResult;
+    handleAllErrors(std::move(Err), [&ErrorStr, &LookupResult](
+                                        const ModuleLookupError &LookupErr) {
+      ErrorStr = LookupErr.message();
+      LookupResult = LookupErr.EC == ModuleLookupErrorCode::FileNotFound
+                         ? Missing
+                         : OutOfDate;
+    });
+    return LookupResult;
   }
 
   // The ModuleManager's use of FileEntry nodes as the keys for its map of
@@ -436,12 +435,27 @@ void ModuleManager::visit(llvm::function_ref<bool(ModuleFile &M)> Visitor,
   returnVisitState(std::move(State));
 }
 
-bool ModuleManager::lookupModuleFile(StringRef FileName, off_t ExpectedSize,
-                                     time_t ExpectedModTime,
-                                     OptionalFileEntryRef &File) {
+char ModuleLookupError::ID = 0;
+
+std::string ModuleLookupError::message() const {
+  switch (EC) {
+  case ModuleLookupErrorCode::ModTimeMismatch:
+    return "module file has a different mtime than expected";
+  case ModuleLookupErrorCode::SizeMismatch:
+    return "module file has a different size than expected";
+  case ModuleLookupErrorCode::FileNotFound:
+    return "module file not found";
+  }
+}
+
+void ModuleLookupError::log(raw_ostream &OS) const { OS << message() << "\n"; }
+
+llvm::Error ModuleManager::lookupModuleFile(StringRef FileName,
+                                            const ModuleExpectations &ME,
+                                            OptionalFileEntryRef &File) {
   if (FileName == "-") {
     File = expectedToOptional(FileMgr.getSTDIN());
-    return false;
+    return llvm::Error::success();
   }
 
   // Open the file immediately to ensure there is no race between stat'ing and
@@ -449,14 +463,23 @@ bool ModuleManager::lookupModuleFile(StringRef FileName, off_t ExpectedSize,
   File = FileMgr.getOptionalFileRef(FileName, /*OpenFile=*/true,
                                     /*CacheFailure=*/false);
 
-  if (File &&
-      ((ExpectedSize && ExpectedSize != File->getSize()) ||
-       (ExpectedModTime && ExpectedModTime != File->getModificationTime())))
-    // Do not destroy File, as it may be referenced. If we need to rebuild it,
-    // it will be destroyed by removeModules.
-    return true;
+  if (!File)
+    return llvm::make_error<ModuleLookupError>(
+        ModuleLookupErrorCode::FileNotFound);
 
-  return false;
+  // Do not destroy File if checks fail, as it may be referenced. If we need to
+  // rebuild it, it will be destroyed by removeModules.
+  if (ME.ModTime && *ME.ModTime != File->getModificationTime())
+    return llvm::make_error<ModuleLookupError>(
+        ModuleLookupErrorCode::ModTimeMismatch);
+  if (ME.Size && *ME.Size != File->getSize()) {
+    // TODO(Cyndy): Expand the cases of _why_ the size checked failed.
+
+    return llvm::make_error<ModuleLookupError>(
+        ModuleLookupErrorCode::SizeMismatch);
+  }
+
+  return llvm::Error::success();
 }
 
 #ifndef NDEBUG

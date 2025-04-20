@@ -439,6 +439,7 @@ public:
     HadErrors
   };
 
+  using ModuleExpectations = serialization::ModuleManager::ModuleExpectations;
   using ModuleFile = serialization::ModuleFile;
   using ModuleKind = serialization::ModuleKind;
   using ModuleManager = serialization::ModuleManager;
@@ -1527,7 +1528,7 @@ private:
   ASTReadResult ReadASTCore(StringRef FileName, ModuleKind Type,
                             SourceLocation ImportLoc, ModuleFile *ImportedBy,
                             SmallVectorImpl<ImportedModule> &Loaded,
-                            off_t ExpectedSize, time_t ExpectedModTime,
+                            ModuleManager::ModuleExpectations ME,
                             ASTFileSignature ExpectedSignature,
                             unsigned ClientLoadCapabilities);
   ASTReadResult ReadControlBlock(ModuleFile &F,

@@ -204,6 +204,25 @@ public:
 
   using ASTFileSignatureReader = ASTFileSignature (*)(StringRef);
 
+  /// Contains optional attributes to compare against when looking up module
+  /// files.
+  struct ModuleExpectations {
+    /// The expected modification time of the module
+    /// file, used for validation. This will be nullopt if unknown.
+    std::optional<time_t> ModTime;
+
+    /// The expected size of the module file, used for
+    /// validation. This will be nullopt if unknown.
+    std::optional<off_t> Size;
+
+    ModuleExpectations() : ModTime(std::nullopt), Size(std::nullopt) {};
+    ModuleExpectations(time_t InputTime, off_t InputSize)
+        : ModTime(InputTime == 0 ? std::nullopt
+                                 : std::make_optional(InputTime)),
+          Size(InputSize == 0 ? std::nullopt : std::make_optional(InputSize)) {
+          };
+  };
+
   /// Attempts to create a new module and add it to the list of known
   /// modules.
   ///
@@ -218,11 +237,8 @@ public:
   ///
   /// \param Generation The generation in which this module was loaded.
   ///
-  /// \param ExpectedSize The expected size of the module file, used for
-  /// validation. This will be zero if unknown.
-  ///
-  /// \param ExpectedModTime The expected modification time of the module
-  /// file, used for validation. This will be zero if unknown.
+  /// \param ME The expectated attributes for the module file, used for
+  /// validation.
   ///
   /// \param ExpectedSignature The expected signature of the module file, used
   /// for validation. This will be zero if unknown.
@@ -239,13 +255,11 @@ public:
   /// \return A pointer to the module that corresponds to this file name,
   /// and a value indicating whether the module was loaded.
   AddModuleResult addModule(StringRef FileName, ModuleKind Type,
-                            SourceLocation ImportLoc,
-                            ModuleFile *ImportedBy, unsigned Generation,
-                            off_t ExpectedSize, time_t ExpectedModTime,
+                            SourceLocation ImportLoc, ModuleFile *ImportedBy,
+                            unsigned Generation, ModuleExpectations ME,
                             ASTFileSignature ExpectedSignature,
                             ASTFileSignatureReader ReadSignature,
-                            ModuleFile *&Module,
-                            std::string &ErrorStr);
+                            ModuleFile *&Module, std::string &ErrorStr);
 
   /// Remove the modules starting from First (to the end).
   void removeModules(ModuleIterator First);
@@ -287,26 +301,52 @@ public:
   ///
   /// \param FileName The name of the module file.
   ///
-  /// \param ExpectedSize The size that the module file is expected to have.
-  /// If the actual size differs, the resolver should return \c true.
-  ///
-  /// \param ExpectedModTime The modification time that the module file is
-  /// expected to have. If the actual modification time differs, the resolver
-  /// should return \c true.
+  /// \param ME The expectated attributes for the module file to have, used for
+  /// validation.
   ///
   /// \param File Will be set to the file if there is one, or null
   /// otherwise.
   ///
-  /// \returns True if a file exists but does not meet the size/
-  /// modification time criteria, false if the file is either available and
-  /// suitable, or is missing.
-  bool lookupModuleFile(StringRef FileName, off_t ExpectedSize,
-                        time_t ExpectedModTime, OptionalFileEntryRef &File);
+  /// \returns Success if the file exists & meets the expectations compared
+  /// against \ME, but an error otherwise.
+  llvm::Error lookupModuleFile(StringRef FileName, const ModuleExpectations &ME,
+                               OptionalFileEntryRef &File);
 
   /// View the graphviz representation of the module graph.
   void viewGraph();
 
   ModuleCache &getModuleCache() const { return *ModCache; }
+};
+
+/// Represents error classifications that can occur from \c lookupModuleFile.
+enum class ModuleLookupErrorCode {
+  /// Represents a modified time mismatch between the expected time and the
+  /// actual time of the discovered module file.
+  ModTimeMismatch,
+  /// Represents a file size mismatch between the expected size and the actual
+  /// size of the discovered module file.
+  SizeMismatch,
+  /// Represents when the expected file path location of the module file was not
+  /// found.
+  FileNotFound
+};
+
+/// Carries error information from unsuccessful \c lookupModuleFile calls.
+class ModuleLookupError : public llvm::ErrorInfo<ModuleLookupError> {
+public:
+  static char ID;
+  ModuleLookupErrorCode EC;
+  std::string Msg;
+
+  ModuleLookupError(ModuleLookupErrorCode EC) : EC(EC) {}
+  ModuleLookupError(ModuleLookupErrorCode EC, std::string Msg)
+      : EC(EC), Msg(std::move(Msg)) {}
+
+  std::string message() const override;
+  void log(raw_ostream &OS) const override;
+  std::error_code convertToErrorCode() const override {
+    llvm_unreachable("convertToErrorCode is not supported.");
+  }
 };
 
 } // namespace serialization
