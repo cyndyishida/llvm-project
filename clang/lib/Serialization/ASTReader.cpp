@@ -3286,7 +3286,8 @@ ASTReader::ReadControlBlock(ModuleFile &F,
       // explicit name to file mappings. Also, we will still verify the
       // size/signature making sure it is essentially the same file but
       // perhaps in a different location.
-      if (ImportedKind == MK_PrebuiltModule || ImportedKind == MK_ExplicitModule)
+      bool UseFilemap = ImportedKind == MK_PrebuiltModule || ImportedKind == MK_ExplicitModule;
+      if (UseFilemap)
         ImportedFile = PP.getHeaderSearchInfo().getPrebuiltModuleFileName(
             ImportedName, /*FileMapOnly*/ !IsImportingStdCXXModule);
 
@@ -3309,7 +3310,7 @@ ASTReader::ReadControlBlock(ModuleFile &F,
           // ModuleCache as when writing.
           ImportedFile =
               ReadPathBlob(BaseDirectoryAsWritten, Record, Idx, Blob);
-        }
+        } 
       }
 
       // If our client can't cope with us being out of date, we can't cope with
@@ -3342,9 +3343,16 @@ ASTReader::ReadControlBlock(ModuleFile &F,
                                       .getModuleCache()
                                       .getInMemoryModuleCache()
                                       .isPCMFinal(F.FileName);
-      if (isDiagnosedResult(Result, Capabilities) || recompilingFinalized)
+      if (isDiagnosedResult(Result, Capabilities) || recompilingFinalized) {
         Diag(diag::note_module_file_imported_by)
             << F.FileName << !F.ModuleName.empty() << F.ModuleName;
+        if (UseFilemap && !F.ModuleName.empty()) {
+          std::string StoredFile = ReadPathBlob(BaseDirectoryAsWritten, Record, Idx, Blob);
+          if (StoredFile != ImportedFile)
+            Diag(diag::note_alternate_module_file_imported)
+              << StoredFile << F.ModuleName;
+        }
+      }
 
       switch (Result) {
       case Failure: return Failure;

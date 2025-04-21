@@ -214,13 +214,17 @@ public:
     /// The expected size of the module file, used for
     /// validation. This will be nullopt if unknown.
     std::optional<off_t> Size;
+    
+    /// Path to an alternate module file that was not picked when deciding which \c File
+    /// \c lookupModuleFile should load.
+    std::optional<StringRef> AlternateModuleFile;
 
-    ModuleExpectations() : ModTime(std::nullopt), Size(std::nullopt) {};
-    ModuleExpectations(time_t InputTime, off_t InputSize)
+    ModuleExpectations() = default; ///: ModTime(std::nullopt), Size(std::nullopt), AlternateModuleFile(std::nullopt) {};
+    ModuleExpectations(time_t InputTime, off_t InputSize, StringRef AltModuleFile = "")
         : ModTime(InputTime == 0 ? std::nullopt
                                  : std::make_optional(InputTime)),
-          Size(InputSize == 0 ? std::nullopt : std::make_optional(InputSize)) {
-          };
+          Size(InputSize == 0 ? std::nullopt : std::make_optional(InputSize)),
+          AlternateModuleFile(AltModuleFile.empty()? std::nullopt : std::make_optional(AltModuleFile))  {};
   };
 
   /// Attempts to create a new module and add it to the list of known
@@ -326,9 +330,12 @@ enum class ModuleLookupErrorCode {
   /// Represents a file size mismatch between the expected size and the actual
   /// size of the discovered module file.
   SizeMismatch,
+  /// Represents a file size mismatch, but additionally when there was an alternate module file 
+  /// that could have been looked up.
+  AlternateModuleFile,
   /// Represents when the expected file path location of the module file was not
   /// found.
-  FileNotFound
+  FileNotFound,
 };
 
 /// Carries error information from unsuccessful \c lookupModuleFile calls.

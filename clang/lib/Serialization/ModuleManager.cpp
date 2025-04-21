@@ -438,11 +438,14 @@ void ModuleManager::visit(llvm::function_ref<bool(ModuleFile &M)> Visitor,
 char ModuleLookupError::ID = 0;
 
 std::string ModuleLookupError::message() const {
+  std::string SizePrefixStr = "module file has a different size than expected";
   switch (EC) {
   case ModuleLookupErrorCode::ModTimeMismatch:
     return "module file has a different mtime than expected";
   case ModuleLookupErrorCode::SizeMismatch:
-    return "module file has a different size than expected";
+    [[fallthrough]];
+  case ModuleLookupErrorCode::AlternateModuleFile:
+    return SizePrefixStr;
   case ModuleLookupErrorCode::FileNotFound:
     return "module file not found";
   }
