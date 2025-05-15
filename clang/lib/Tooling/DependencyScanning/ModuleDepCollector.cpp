@@ -8,6 +8,7 @@
 
 #include "clang/Tooling/DependencyScanning/ModuleDepCollector.h"
 
+#include "clang/Basic/DiagnosticSerialization.h"
 #include "clang/Basic/MakeSupport.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Preprocessor.h"
@@ -248,14 +249,26 @@ bool dependencies::isPathInStableDir(const ArrayRef<StringRef> Directories,
   });
 }
 
+bool dependencies::checkHeaderSearchOptions(
+    const HeaderSearchOptions &HSOpts,
+    const HeaderSearchOptions &ExistingHSOpts,
+    const StringRef Filename, DiagnosticsEngine *Diags) {
+    const bool MatchingSysroots = HSOpts.Sysroot == ExistingHSOpts.Sysroot ;
+    const bool MatchingResourceDirs = HSOpts.ResourceDir == ExistingHSOpts.ResourceDir;
+    if (MatchingSysroots && MatchingResourceDirs) 
+      return true;
+
+    if (!MatchingSysroots && Diags)
+      Diags->Report(diag::warn_ast_file_sysroot_mismatch)
+          << Filename << ExistingHSOpts.Sysroot << HSOpts.Sysroot;
+    if (!MatchingResourceDirs && Diags)
+      Diags->Report(diag::warn_ast_file_resource_dir_mismatch)
+          << Filename << ExistingHSOpts.ResourceDir << HSOpts.ResourceDir;
+  return false;
+}
+
 bool dependencies::areOptionsInStableDir(const ArrayRef<StringRef> Directories,
                                          const HeaderSearchOptions &HSOpts) {
-  assert(isPathInStableDir(Directories, HSOpts.Sysroot) &&
-         "Sysroots differ between module dependencies and current TU");
-
-  assert(isPathInStableDir(Directories, HSOpts.ResourceDir) &&
-         "ResourceDirs differ between module dependencies and current TU");
-
   for (const auto &Entry : HSOpts.UserEntries) {
     if (!Entry.IgnoreSysRoot)
       continue;
@@ -856,7 +869,11 @@ ModuleDepCollectorPP::handleTopLevelModule(const Module *M) {
 
   // Check provided input paths from the invocation for determining
   // IsInStableDirectories.
-  if (MD.IsInStableDirectories)
+  if (checkHeaderSearchOptions(MDC.ScanInstance.getHeaderSearchOpts(),
+                               CI.getHeaderSearchOpts(),
+
+                               MDC.ScanInstance.getDiagnostics()) &&
+      MD.IsInStableDirectories)
     MD.IsInStableDirectories =
         areOptionsInStableDir(MDC.StableDirs, CI.getHeaderSearchOpts());
 

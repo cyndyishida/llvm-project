@@ -44,6 +44,13 @@ def err_ast_file_diagopt_mismatch : Error<"%0 is currently enabled, but was not 
   "the AST file '%1'">;
 def err_ast_file_modulecache_mismatch : Error<"AST file '%2' was compiled with module cache "
   "path '%0', but the path is currently '%1'">;
+def warn_ast_file_sysroot_mismatch : Warning<
+  "{PCH| module}0 file '%1' was compiled with different sysroot path '%2' than what is currently in use '%3'">,
+  InGroup<DiagGroup<"ast-sysroot-diff">>;
+def warn_ast_file_resource_dir_mismatch : Warning<
+  "{PCH| module}0 file '%1' was compiled with different resource directory '%2' than what is currently in use '%3'">,
+  InGroup<DiagGroup<"ast-resource-dir-diff">>;
+
 def warn_pch_vfsoverlay_mismatch : Warning<
   "PCH was compiled with different VFS overlay files than are currently in use">,
   InGroup<DiagGroup<"pch-vfs-diff">>;

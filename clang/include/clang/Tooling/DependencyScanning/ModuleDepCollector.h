@@ -392,6 +392,18 @@ bool isPathInStableDir(const ArrayRef<StringRef> Directories,
 bool areOptionsInStableDir(const ArrayRef<StringRef> Directories,
                            const HeaderSearchOptions &HSOpts);
 
+/// Validate that basic \c HeaderSearchOptions between the current TU and 
+/// module dependencies match. 
+///
+/// \param HSOpts The options used to compile the current TU.
+/// \param ExistingHSOpts The options used to compile the module dependency. 
+/// \param Filename The file path for the module dependency.
+/// \param Diags If a \c DiagnosticsEngine is passed, emit warnings about mismatches.
+bool checkHeaderSearchOptions(const HeaderSearchOptions &HSOpts,
+                              const HeaderSearchOptions &ExistingHSOpts,
+                              const StringRef Filename, 
+                              DiagnosticsEngine *Diags);
+
 } // end namespace dependencies
 } // end namespace tooling
 } // end namespace clang

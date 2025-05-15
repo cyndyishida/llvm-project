@@ -168,8 +168,10 @@ public:
     PrebuiltModuleASTAttrs &PrebuiltModule = PrebuiltMapEntry.first->second;
     if (PrebuiltMapEntry.second)
       PrebuiltModule.setInStableDir(!StableDirs.empty());
-
-    if (PrebuiltModule.isInStableDir())
+  
+    if ( checkHeaderSearchOptions(HSOpts, ExistingHSOpts, CurrentFile,
+          Complain? &Diags: nullptr) 
+        && PrebuiltModule.isInStableDir())
       PrebuiltModule.setInStableDir(areOptionsInStableDir(StableDirs, HSOpts));
 
     return false;
