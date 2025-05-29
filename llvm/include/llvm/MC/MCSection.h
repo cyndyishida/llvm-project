@@ -107,6 +107,10 @@ private:
 
   bool IsVirtual : 1;
 
+  /// Whether the section contains linker-relaxable fragments. If true, the
+  /// offset between two locations may not be fully resolved.
+  bool LinkerRelaxable : 1;
+
   MCDummyFragment DummyFragment;
 
   // Mapping from subsection number to fragment list. At layout time, the
@@ -175,13 +179,15 @@ public:
   bool isRegistered() const { return IsRegistered; }
   void setIsRegistered(bool Value) { IsRegistered = Value; }
 
+  bool isLinkerRelaxable() const { return LinkerRelaxable; }
+  void setLinkerRelaxable() { LinkerRelaxable = true; }
+
   const MCDummyFragment &getDummyFragment() const { return DummyFragment; }
   MCDummyFragment &getDummyFragment() { return DummyFragment; }
 
   FragList *curFragList() const { return CurFragList; }
   iterator begin() const { return iterator(CurFragList->Head); }
   iterator end() const { return {}; }
-  bool empty() const { return !CurFragList->Head; }
 
   void dump() const;
 

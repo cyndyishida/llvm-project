@@ -17,10 +17,10 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/BinaryFormat/DXContainer.h"
+#include "llvm/Object/DXContainer.h"
 #include "llvm/ObjectYAML/YAML.h"
 #include "llvm/Support/YAMLTraits.h"
 #include <array>
-#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -72,6 +72,94 @@ struct ShaderHash {
   std::vector<llvm::yaml::Hex8> Digest;
 };
 
+struct RootConstantsYaml {
+  uint32_t ShaderRegister;
+  uint32_t RegisterSpace;
+  uint32_t Num32BitValues;
+};
+
+struct RootDescriptorYaml {
+  RootDescriptorYaml() = default;
+
+  uint32_t ShaderRegister;
+  uint32_t RegisterSpace;
+
+  uint32_t getEncodedFlags() const;
+
+#define ROOT_DESCRIPTOR_FLAG(Num, Val) bool Val = false;
+#include "llvm/BinaryFormat/DXContainerConstants.def"
+};
+
+struct RootParameterHeaderYaml {
+  uint32_t Type;
+  uint32_t Visibility;
+  uint32_t Offset;
+
+  RootParameterHeaderYaml(){};
+  RootParameterHeaderYaml(uint32_t T) : Type(T) {}
+};
+
+struct RootParameterLocationYaml {
+  RootParameterHeaderYaml Header;
+  std::optional<size_t> IndexInSignature;
+
+  RootParameterLocationYaml(){};
+  explicit RootParameterLocationYaml(RootParameterHeaderYaml Header)
+      : Header(Header) {}
+};
+
+struct RootParameterYamlDesc {
+  SmallVector<RootParameterLocationYaml> Locations;
+
+  SmallVector<RootConstantsYaml> Constants;
+  SmallVector<RootDescriptorYaml> Descriptors;
+
+  template <typename T>
+  T &getOrInsertImpl(RootParameterLocationYaml &ParamDesc,
+                     SmallVectorImpl<T> &Container) {
+    if (!ParamDesc.IndexInSignature) {
+      ParamDesc.IndexInSignature = Container.size();
+      Container.emplace_back();
+    }
+    return Container[*ParamDesc.IndexInSignature];
+  }
+
+  RootConstantsYaml &
+  getOrInsertConstants(RootParameterLocationYaml &ParamDesc) {
+    return getOrInsertImpl(ParamDesc, Constants);
+  }
+
+  RootDescriptorYaml &
+  getOrInsertDescriptor(RootParameterLocationYaml &ParamDesc) {
+    return getOrInsertImpl(ParamDesc, Descriptors);
+  }
+
+  void insertLocation(RootParameterLocationYaml &Location) {
+    Locations.push_back(Location);
+  }
+};
+
+struct RootSignatureYamlDesc {
+  RootSignatureYamlDesc() = default;
+
+  uint32_t Version;
+  uint32_t NumRootParameters;
+  uint32_t RootParametersOffset;
+  uint32_t NumStaticSamplers;
+  uint32_t StaticSamplersOffset;
+
+  RootParameterYamlDesc Parameters;
+
+  uint32_t getEncodedFlags();
+
+  static llvm::Expected<DXContainerYAML::RootSignatureYamlDesc>
+  create(const object::DirectX::RootSignature &Data);
+
+#define ROOT_ELEMENT_FLAG(Num, Val) bool Val = false;
+#include "llvm/BinaryFormat/DXContainerConstants.def"
+};
+
+using ResourceFlags = dxbc::PSV::ResourceFlags;
 using ResourceBindInfo = dxbc::PSV::v2::ResourceBindInfo;
 
 struct SignatureElement {
@@ -158,6 +246,7 @@ struct Part {
   std::optional<ShaderHash> Hash;
   std::optional<PSVInfo> Info;
   std::optional<DXContainerYAML::Signature> Signature;
+  std::optional<DXContainerYAML::RootSignatureYamlDesc> RootSignature;
 };
 
 struct Object {
@@ -173,9 +262,12 @@ LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::DXContainerYAML::ResourceBindInfo)
 LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::DXContainerYAML::SignatureElement)
 LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::DXContainerYAML::PSVInfo::MaskVector)
 LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::DXContainerYAML::SignatureParameter)
+LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::DXContainerYAML::RootParameterLocationYaml)
 LLVM_YAML_DECLARE_ENUM_TRAITS(llvm::dxbc::PSV::SemanticKind)
 LLVM_YAML_DECLARE_ENUM_TRAITS(llvm::dxbc::PSV::ComponentType)
 LLVM_YAML_DECLARE_ENUM_TRAITS(llvm::dxbc::PSV::InterpolationMode)
+LLVM_YAML_DECLARE_ENUM_TRAITS(llvm::dxbc::PSV::ResourceType)
+LLVM_YAML_DECLARE_ENUM_TRAITS(llvm::dxbc::PSV::ResourceKind)
 LLVM_YAML_DECLARE_ENUM_TRAITS(llvm::dxbc::D3DSystemValue)
 LLVM_YAML_DECLARE_ENUM_TRAITS(llvm::dxbc::SigComponentType)
 LLVM_YAML_DECLARE_ENUM_TRAITS(llvm::dxbc::SigMinPrecision)
@@ -218,6 +310,10 @@ template <> struct MappingTraits<DXContainerYAML::Object> {
   static void mapping(IO &IO, DXContainerYAML::Object &Obj);
 };
 
+template <> struct MappingTraits<DXContainerYAML::ResourceFlags> {
+  static void mapping(IO &IO, DXContainerYAML::ResourceFlags &Flags);
+};
+
 template <> struct MappingTraits<DXContainerYAML::ResourceBindInfo> {
   static void mapping(IO &IO, DXContainerYAML::ResourceBindInfo &Res);
 };
@@ -232,6 +328,27 @@ template <> struct MappingTraits<DXContainerYAML::SignatureParameter> {
 
 template <> struct MappingTraits<DXContainerYAML::Signature> {
   static void mapping(IO &IO, llvm::DXContainerYAML::Signature &El);
+};
+
+template <> struct MappingTraits<DXContainerYAML::RootSignatureYamlDesc> {
+  static void mapping(IO &IO,
+                      DXContainerYAML::RootSignatureYamlDesc &RootSignature);
+};
+
+template <>
+struct MappingContextTraits<DXContainerYAML::RootParameterLocationYaml,
+                            DXContainerYAML::RootSignatureYamlDesc> {
+  static void mapping(IO &IO,
+                      llvm::DXContainerYAML::RootParameterLocationYaml &L,
+                      DXContainerYAML::RootSignatureYamlDesc &S);
+};
+
+template <> struct MappingTraits<llvm::DXContainerYAML::RootConstantsYaml> {
+  static void mapping(IO &IO, llvm::DXContainerYAML::RootConstantsYaml &C);
+};
+
+template <> struct MappingTraits<llvm::DXContainerYAML::RootDescriptorYaml> {
+  static void mapping(IO &IO, llvm::DXContainerYAML::RootDescriptorYaml &D);
 };
 
 } // namespace yaml

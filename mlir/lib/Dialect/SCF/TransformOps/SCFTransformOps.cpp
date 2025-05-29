@@ -594,9 +594,10 @@ transform::LoopFuseSiblingOp::apply(transform::TransformRewriter &rewriter,
   } else if (isForallWithIdenticalConfiguration(target, source)) {
     fusedLoop = fuseIndependentSiblingForallLoops(
         cast<scf::ForallOp>(target), cast<scf::ForallOp>(source), rewriter);
-  } else
+  } else {
     return emitSilenceableFailure(target->getLoc())
            << "operations cannot be fused";
+  }
 
   assert(fusedLoop && "failed to fuse operations");
 
@@ -613,6 +614,8 @@ class SCFTransformDialectExtension
     : public transform::TransformDialectExtension<
           SCFTransformDialectExtension> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SCFTransformDialectExtension)
+
   using Base::Base;
 
   void init() {

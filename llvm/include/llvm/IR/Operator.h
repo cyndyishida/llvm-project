@@ -123,6 +123,9 @@ public:
     return NoWrapKind;
   }
 
+  /// Return true if the instruction is commutative
+  bool isCommutative() const { return Instruction::isCommutative(getOpcode()); }
+
   static bool classof(const Instruction *I) {
     return I->getOpcode() == Instruction::Add ||
            I->getOpcode() == Instruction::Sub ||
@@ -131,9 +134,7 @@ public:
   }
   static bool classof(const ConstantExpr *CE) {
     return CE->getOpcode() == Instruction::Add ||
-           CE->getOpcode() == Instruction::Sub ||
-           CE->getOpcode() == Instruction::Mul ||
-           CE->getOpcode() == Instruction::Shl;
+           CE->getOpcode() == Instruction::Sub;
   }
   static bool classof(const Value *V) {
     return (isa<Instruction>(V) && classof(cast<Instruction>(V))) ||
@@ -147,7 +148,7 @@ struct OperandTraits<OverflowingBinaryOperator>
 
 DEFINE_TRANSPARENT_OPERAND_ACCESSORS(OverflowingBinaryOperator, Value)
 
-/// A udiv or sdiv instruction, which can be marked as "exact",
+/// A udiv, sdiv, lshr, or ashr instruction, which can be marked as "exact",
 /// indicating that no bits are destroyed.
 class PossiblyExactOperator : public Operator {
 public:
@@ -179,15 +180,11 @@ public:
            OpC == Instruction::LShr;
   }
 
-  static bool classof(const ConstantExpr *CE) {
-    return isPossiblyExactOpcode(CE->getOpcode());
-  }
   static bool classof(const Instruction *I) {
     return isPossiblyExactOpcode(I->getOpcode());
   }
   static bool classof(const Value *V) {
-    return (isa<Instruction>(V) && classof(cast<Instruction>(V))) ||
-           (isa<ConstantExpr>(V) && classof(cast<ConstantExpr>(V)));
+    return (isa<Instruction>(V) && classof(cast<Instruction>(V)));
   }
 };
 
@@ -268,6 +265,21 @@ private:
     SubclassOptionalData = FMF.Flags;
   }
 
+  /// Returns true if `Ty` is composed of a single kind of float-poing type
+  /// (possibly repeated within an aggregate).
+  static bool isComposedOfHomogeneousFloatingPointTypes(Type *Ty) {
+    if (auto *StructTy = dyn_cast<StructType>(Ty)) {
+      if (!StructTy->isLiteral() || !StructTy->containsHomogeneousTypes())
+        return false;
+      Ty = StructTy->elements().front();
+    } else if (auto *ArrayTy = dyn_cast<ArrayType>(Ty)) {
+      do {
+        Ty = ArrayTy->getElementType();
+      } while ((ArrayTy = dyn_cast<ArrayType>(Ty)));
+    }
+    return Ty->isFPOrFPVectorTy();
+  };
+
 public:
   /// Test if this operation allows all non-strict floating-point transforms.
   bool isFast() const {
@@ -326,6 +338,13 @@ public:
   /// precision.
   float getFPAccuracy() const;
 
+  /// Returns true if `Ty` is a supported floating-point type for phi, select,
+  /// or call FPMathOperators.
+  static bool isSupportedFloatingPointType(Type *Ty) {
+    return Ty->isFPOrFPVectorTy() ||
+           isComposedOfHomogeneousFloatingPointTypes(Ty);
+  }
+
   static bool classof(const Value *V) {
     unsigned Opcode;
     if (auto *I = dyn_cast<Instruction>(V))
@@ -340,6 +359,8 @@ public:
     case Instruction::FMul:
     case Instruction::FDiv:
     case Instruction::FRem:
+    case Instruction::FPTrunc:
+    case Instruction::FPExt:
     // FIXME: To clean up and correct the semantics of fast-math-flags, FCmp
     //        should not be treated as a math op, but the other opcodes should.
     //        This would make things consistent with Select/PHI (FP value type
@@ -350,10 +371,7 @@ public:
     case Instruction::PHI:
     case Instruction::Select:
     case Instruction::Call: {
-      Type *Ty = V->getType();
-      while (ArrayType *ArrTy = dyn_cast<ArrayType>(Ty))
-        Ty = ArrTy->getElementType();
-      return Ty->isFPOrFPVectorTy();
+      return isSupportedFloatingPointType(V->getType());
     }
     default:
       return false;
@@ -528,13 +546,13 @@ public:
   /// Collect the offset of this GEP as a map of Values to their associated
   /// APInt multipliers, as well as a total Constant Offset.
   bool collectOffset(const DataLayout &DL, unsigned BitWidth,
-                     MapVector<Value *, APInt> &VariableOffsets,
+                     SmallMapVector<Value *, APInt, 4> &VariableOffsets,
                      APInt &ConstantOffset) const;
 };
 
 template <>
-struct OperandTraits<GEPOperator>
-    : public VariadicOperandTraits<GEPOperator, 1> {};
+struct OperandTraits<GEPOperator> : public VariadicOperandTraits<GEPOperator> {
+};
 
 DEFINE_TRANSPARENT_OPERAND_ACCESSORS(GEPOperator, Value)
 

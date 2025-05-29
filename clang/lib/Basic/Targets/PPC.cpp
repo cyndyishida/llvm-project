@@ -19,15 +19,22 @@
 using namespace clang;
 using namespace clang::targets;
 
-static constexpr Builtin::Info BuiltinInfo[] = {
-#define BUILTIN(ID, TYPE, ATTRS)                                               \
-  {#ID, TYPE, ATTRS, nullptr, HeaderDesc::NO_HEADER, ALL_LANGUAGES},
-#define TARGET_BUILTIN(ID, TYPE, ATTRS, FEATURE)                               \
-  {#ID, TYPE, ATTRS, FEATURE, HeaderDesc::NO_HEADER, ALL_LANGUAGES},
-#define LIBBUILTIN(ID, TYPE, ATTRS, HEADER)                                    \
-  {#ID, TYPE, ATTRS, nullptr, HeaderDesc::HEADER, ALL_LANGUAGES},
+static constexpr int NumBuiltins =
+    clang::PPC::LastTSBuiltin - Builtin::FirstTSBuiltin;
+
+static constexpr llvm::StringTable BuiltinStrings =
+    CLANG_BUILTIN_STR_TABLE_START
+#define BUILTIN CLANG_BUILTIN_STR_TABLE
+#define TARGET_BUILTIN CLANG_TARGET_BUILTIN_STR_TABLE
 #include "clang/Basic/BuiltinsPPC.def"
-};
+    ;
+
+static constexpr auto BuiltinInfos = Builtin::MakeInfos<NumBuiltins>({
+#define BUILTIN CLANG_BUILTIN_ENTRY
+#define TARGET_BUILTIN CLANG_TARGET_BUILTIN_ENTRY
+#define LIBBUILTIN CLANG_LIBBUILTIN_ENTRY
+#include "clang/Basic/BuiltinsPPC.def"
+});
 
 /// handleTargetFeatures - Perform initialization based on the user
 /// configured set of features.
@@ -39,18 +46,10 @@ bool PPCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasAltivec = true;
     } else if (Feature == "+vsx") {
       HasVSX = true;
-    } else if (Feature == "+crbits") {
-      UseCRBits = true;
-    } else if (Feature == "+bpermd") {
-      HasBPERMD = true;
-    } else if (Feature == "+extdiv") {
-      HasExtDiv = true;
     } else if (Feature == "+power8-vector") {
       HasP8Vector = true;
     } else if (Feature == "+crypto") {
       HasP8Crypto = true;
-    } else if (Feature == "+direct-move") {
-      HasDirectMove = true;
     } else if (Feature == "+htm") {
       HasHTM = true;
     } else if (Feature == "+float128") {
@@ -61,39 +60,23 @@ bool PPCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasP10Vector = true;
     } else if (Feature == "+pcrelative-memops") {
       HasPCRelativeMemops = true;
-    } else if (Feature == "+prefix-instrs") {
-      HasPrefixInstrs = true;
     } else if (Feature == "+spe" || Feature == "+efpu2") {
       HasStrictFP = false;
       HasSPE = true;
       LongDoubleWidth = LongDoubleAlign = 64;
       LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+    } else if (Feature == "+frsqrte") {
+      HasFrsqrte = true;
+    } else if (Feature == "+frsqrtes") {
+      HasFrsqrtes = true;
     } else if (Feature == "-hard-float") {
       FloatABI = SoftFloat;
-    } else if (Feature == "+paired-vector-memops") {
-      PairedVectorMemops = true;
     } else if (Feature == "+mma") {
       HasMMA = true;
     } else if (Feature == "+rop-protect") {
       HasROPProtect = true;
-    } else if (Feature == "+privileged") {
-      HasPrivileged = true;
-    } else if (Feature == "+aix-small-local-exec-tls") {
-      HasAIXSmallLocalExecTLS = true;
-    } else if (Feature == "+aix-small-local-dynamic-tls") {
-      HasAIXSmallLocalDynamicTLS = true;
-    } else if (Feature == "+isa-v206-instructions") {
-      IsISA2_06 = true;
-    } else if (Feature == "+isa-v207-instructions") {
-      IsISA2_07 = true;
-    } else if (Feature == "+isa-v30-instructions") {
-      IsISA3_0 = true;
-    } else if (Feature == "+isa-v31-instructions") {
-      IsISA3_1 = true;
     } else if (Feature == "+quadword-atomics") {
       HasQuadwordAtomics = true;
-    } else if (Feature == "+aix-shared-lib-tls-model-opt") {
-      HasAIXShLibTLSModelOpt = true;
     } else if (Feature == "+longcall") {
       UseLongCalls = true;
     }
@@ -105,6 +88,9 @@ bool PPCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
 }
 
 static void defineXLCompatMacros(MacroBuilder &Builder) {
+  Builder.defineMacro("__cdtbcd", "__builtin_ppc_cdtbcd");
+  Builder.defineMacro("__cbcdtd", "__builtin_ppc_cbcdtd");
+  Builder.defineMacro("__addg6s", "__builtin_ppc_addg6s");
   Builder.defineMacro("__popcntb", "__builtin_ppc_popcntb");
   Builder.defineMacro("__poppar4", "__builtin_ppc_poppar4");
   Builder.defineMacro("__poppar8", "__builtin_ppc_poppar8");
@@ -399,9 +385,18 @@ void PPCTargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__VEC__", "10206");
     Builder.defineMacro("__ALTIVEC__");
   }
-  if (HasSPE) {
+  if (HasSPE)
     Builder.defineMacro("__SPE__");
+  if (HasSPE || FloatABI == SoftFloat)
     Builder.defineMacro("__NO_FPRS__");
+  if (FloatABI == SoftFloat) {
+    Builder.defineMacro("_SOFT_FLOAT");
+    Builder.defineMacro("_SOFT_DOUBLE");
+  } else {
+    if (HasFrsqrte)
+      Builder.defineMacro("__RSQRTE__");
+    if (HasFrsqrtes)
+      Builder.defineMacro("__RSQRTEF__");
   }
   if (HasVSX)
     Builder.defineMacro("__VSX__");
@@ -436,14 +431,10 @@ void PPCTargetInfo::getTargetDefines(const LangOptions &Opts,
   // FIXME: The following are not yet generated here by Clang, but are
   //        generated by GCC:
   //
-  //   _SOFT_FLOAT_
   //   __RECIP_PRECISION__
   //   __APPLE_ALTIVEC__
   //   __RECIP__
   //   __RECIPF__
-  //   __RSQRTE__
-  //   __RSQRTEF__
-  //   _SOFT_DOUBLE_
   //   __NO_LWSYNC__
   //   __CMODEL_MEDIUM__
   //   __CMODEL_LARGE__
@@ -466,21 +457,36 @@ void PPCTargetInfo::getTargetDefines(const LangOptions &Opts,
 // set of options.
 static bool ppcUserFeaturesCheck(DiagnosticsEngine &Diags,
                                  const std::vector<std::string> &FeaturesVec) {
-  // Cannot allow soft-float with Altivec.
-  if (llvm::is_contained(FeaturesVec, "-hard-float") &&
-      llvm::is_contained(FeaturesVec, "+altivec")) {
-    Diags.Report(diag::err_opt_not_valid_with_opt) << "-msoft-float"
-                                                   << "-maltivec";
+  auto FindVSXSubfeature = [&](StringRef Feature, StringRef SubOption,
+                               StringRef Option) {
+    if (llvm::is_contained(FeaturesVec, Feature)) {
+      Diags.Report(diag::err_opt_not_valid_with_opt) << SubOption << Option;
+      return true;
+    }
     return false;
-  }
+  };
 
-  // Cannot allow soft-float with VSX.
-  if (llvm::is_contained(FeaturesVec, "-hard-float") &&
-      llvm::is_contained(FeaturesVec, "+vsx")) {
-    Diags.Report(diag::err_opt_not_valid_with_opt) << "-msoft-float"
-                                                   << "-mvsx";
-    return false;
+  // Cannot allow soft-float with VSX, Altivec, or any
+  // VSX subfeatures.
+  bool Found = false;
+  if (llvm::is_contained(FeaturesVec, "-hard-float")) {
+    Found |= FindVSXSubfeature("+vsx", "-mvsx", "-msoft-float");
+    Found |= FindVSXSubfeature("+altivec", "-maltivec", "-msoft-float");
+    Found |=
+        FindVSXSubfeature("+power8-vector", "-mpower8-vector", "-msoft-float");
+    Found |= FindVSXSubfeature("+direct-move", "-mdirect-move", "-msoft-float");
+    Found |= FindVSXSubfeature("+float128", "-mfloat128", "-msoft-float");
+    Found |=
+        FindVSXSubfeature("+power9-vector", "-mpower9-vector", "-msoft-float");
+    Found |= FindVSXSubfeature("+paired-vector-memops",
+                               "-mpaired-vector-memops", "-msoft-float");
+    Found |= FindVSXSubfeature("+mma", "-mmma", "-msoft-float");
+    Found |= FindVSXSubfeature("+crypto", "-mcrypto", "-msoft-float");
+    Found |= FindVSXSubfeature("+power10-vector", "-mpower10-vector",
+                               "-msoft-float");
   }
+  if (Found)
+    return false;
 
   // Cannot allow VSX with no Altivec.
   if (llvm::is_contained(FeaturesVec, "+vsx") &&
@@ -494,21 +500,14 @@ static bool ppcUserFeaturesCheck(DiagnosticsEngine &Diags,
   if (!llvm::is_contained(FeaturesVec, "-vsx"))
     return true;
 
-  auto FindVSXSubfeature = [&](StringRef Feature, StringRef Option) {
-    if (llvm::is_contained(FeaturesVec, Feature)) {
-      Diags.Report(diag::err_opt_not_valid_with_opt) << Option << "-mno-vsx";
-      return true;
-    }
-    return false;
-  };
-
-  bool Found = FindVSXSubfeature("+power8-vector", "-mpower8-vector");
-  Found |= FindVSXSubfeature("+direct-move", "-mdirect-move");
-  Found |= FindVSXSubfeature("+float128", "-mfloat128");
-  Found |= FindVSXSubfeature("+power9-vector", "-mpower9-vector");
-  Found |= FindVSXSubfeature("+paired-vector-memops", "-mpaired-vector-memops");
-  Found |= FindVSXSubfeature("+mma", "-mmma");
-  Found |= FindVSXSubfeature("+power10-vector", "-mpower10-vector");
+  Found = FindVSXSubfeature("+power8-vector", "-mpower8-vector", "-mno-vsx");
+  Found |= FindVSXSubfeature("+direct-move", "-mdirect-move", "-mno-vsx");
+  Found |= FindVSXSubfeature("+float128", "-mfloat128", "-mno-vsx");
+  Found |= FindVSXSubfeature("+power9-vector", "-mpower9-vector", "-mno-vsx");
+  Found |= FindVSXSubfeature("+paired-vector-memops", "-mpaired-vector-memops",
+                             "-mno-vsx");
+  Found |= FindVSXSubfeature("+mma", "-mmma", "-mno-vsx");
+  Found |= FindVSXSubfeature("+power10-vector", "-mpower10-vector", "-mno-vsx");
 
   // Return false if any vsx subfeatures was found.
   return !Found;
@@ -582,13 +581,15 @@ bool PPCTargetInfo::initFeatureMap(
   // Privileged instructions are off by default.
   Features["privileged"] = false;
 
-  // The code generated by the -maix-small-local-[exec|dynamic]-tls option is
-  // turned off by default.
-  Features["aix-small-local-exec-tls"] = false;
-  Features["aix-small-local-dynamic-tls"] = false;
+  if (getTriple().isOSAIX()) {
+    // The code generated by the -maix-small-local-[exec|dynamic]-tls option is
+    // turned off by default.
+    Features["aix-small-local-exec-tls"] = false;
+    Features["aix-small-local-dynamic-tls"] = false;
 
-  // Turn off TLS model opt by default.
-  Features["aix-shared-lib-tls-model-opt"] = false;
+    // Turn off TLS model opt by default.
+    Features["aix-shared-lib-tls-model-opt"] = false;
+  }
 
   Features["spe"] = llvm::StringSwitch<bool>(CPU)
                         .Case("8548", true)
@@ -678,11 +679,17 @@ bool PPCTargetInfo::initFeatureMap(
     }
   }
 
-  if (!(ArchDefs & ArchDefinePwr8) &&
-      llvm::is_contained(FeaturesVec, "+rop-protect")) {
-    // We can turn on ROP Protect on Power 8 and above.
-    Diags.Report(diag::err_opt_not_valid_with_opt) << "-mrop-protect" << CPU;
-    return false;
+  if (llvm::is_contained(FeaturesVec, "+rop-protect")) {
+    if (PointerWidth == 32) {
+      Diags.Report(diag::err_opt_not_valid_on_target) << "-mrop-protect";
+      return false;
+    }
+
+    if (!(ArchDefs & ArchDefinePwr8)) {
+      // We can turn on ROP Protect on Power 8 and above.
+      Diags.Report(diag::err_opt_not_valid_with_opt) << "-mrop-protect" << CPU;
+      return false;
+    }
   }
 
   if (!(ArchDefs & ArchDefinePwr8) &&
@@ -690,7 +697,6 @@ bool PPCTargetInfo::initFeatureMap(
     Diags.Report(diag::err_opt_not_valid_with_opt) << "-mprivileged" << CPU;
     return false;
   }
-
   return TargetInfo::initFeatureMap(Features, Diags, CPU, FeaturesVec);
 }
 
@@ -719,31 +725,17 @@ bool PPCTargetInfo::hasFeature(StringRef Feature) const {
       .Case("powerpc", true)
       .Case("altivec", HasAltivec)
       .Case("vsx", HasVSX)
-      .Case("crbits", UseCRBits)
       .Case("power8-vector", HasP8Vector)
       .Case("crypto", HasP8Crypto)
-      .Case("direct-move", HasDirectMove)
       .Case("htm", HasHTM)
-      .Case("bpermd", HasBPERMD)
-      .Case("extdiv", HasExtDiv)
       .Case("float128", HasFloat128)
       .Case("power9-vector", HasP9Vector)
-      .Case("paired-vector-memops", PairedVectorMemops)
       .Case("power10-vector", HasP10Vector)
       .Case("pcrelative-memops", HasPCRelativeMemops)
-      .Case("prefix-instrs", HasPrefixInstrs)
       .Case("spe", HasSPE)
       .Case("mma", HasMMA)
       .Case("rop-protect", HasROPProtect)
-      .Case("privileged", HasPrivileged)
-      .Case("aix-small-local-exec-tls", HasAIXSmallLocalExecTLS)
-      .Case("aix-small-local-dynamic-tls", HasAIXSmallLocalDynamicTLS)
-      .Case("isa-v206-instructions", IsISA2_06)
-      .Case("isa-v207-instructions", IsISA2_07)
-      .Case("isa-v30-instructions", IsISA3_0)
-      .Case("isa-v31-instructions", IsISA3_1)
       .Case("quadword-atomics", HasQuadwordAtomics)
-      .Case("aix-shared-lib-tls-model-opt", HasAIXShLibTLSModelOpt)
       .Case("longcall", UseLongCalls)
       .Default(false);
 }
@@ -780,13 +772,16 @@ void PPCTargetInfo::setFeatureEnabled(llvm::StringMap<bool> &Features,
   } else {
     if (Name == "spe")
       Features["efpu2"] = false;
-    // If we're disabling altivec or vsx go ahead and disable all of the vsx
-    // features.
-    if ((Name == "altivec") || (Name == "vsx"))
+    // If we're disabling altivec, hard-float, or vsx go ahead and disable all
+    // of the vsx features.
+    if ((Name == "altivec") || (Name == "vsx") || (Name == "hard-float")) {
+      if (Name != "vsx")
+        Features["altivec"] = Features["crypto"] = false;
       Features["vsx"] = Features["direct-move"] = Features["power8-vector"] =
           Features["float128"] = Features["power9-vector"] =
               Features["paired-vector-memops"] = Features["mma"] =
                   Features["power10-vector"] = false;
+    }
     if (Name == "power8-vector")
       Features["power9-vector"] = Features["paired-vector-memops"] =
           Features["mma"] = Features["power10-vector"] = false;
@@ -905,9 +900,9 @@ void PPCTargetInfo::adjust(DiagnosticsEngine &Diags, LangOptions &Opts) {
     MaxAtomicInlineWidth = 128;
 }
 
-ArrayRef<Builtin::Info> PPCTargetInfo::getTargetBuiltins() const {
-  return llvm::ArrayRef(BuiltinInfo,
-                        clang::PPC::LastTSBuiltin - Builtin::FirstTSBuiltin);
+llvm::SmallVector<Builtin::InfosShard>
+PPCTargetInfo::getTargetBuiltins() const {
+  return {{&BuiltinStrings, BuiltinInfos}};
 }
 
 bool PPCTargetInfo::validateCpuSupports(StringRef FeatureStr) const {

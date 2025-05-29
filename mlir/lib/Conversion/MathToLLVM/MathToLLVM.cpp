@@ -18,6 +18,8 @@
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/FloatingPointMode.h"
+
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTMATHTOLLVMPASS
 #include "mlir/Conversion/Passes.h.inc"
@@ -39,6 +41,8 @@ using CeilOpLowering = ConvertFMFMathToLLVMPattern<math::CeilOp, LLVM::FCeilOp>;
 using CopySignOpLowering =
     ConvertFMFMathToLLVMPattern<math::CopySignOp, LLVM::CopySignOp>;
 using CosOpLowering = ConvertFMFMathToLLVMPattern<math::CosOp, LLVM::CosOp>;
+using CoshOpLowering = ConvertFMFMathToLLVMPattern<math::CoshOp, LLVM::CoshOp>;
+using AcosOpLowering = ConvertFMFMathToLLVMPattern<math::AcosOp, LLVM::ACosOp>;
 using CtPopFOpLowering =
     VectorConvertToLLVMPattern<math::CtPopOp, LLVM::CtPopOp>;
 using Exp2OpLowering = ConvertFMFMathToLLVMPattern<math::Exp2Op, LLVM::Exp2Op>;
@@ -58,10 +62,16 @@ using RoundEvenOpLowering =
 using RoundOpLowering =
     ConvertFMFMathToLLVMPattern<math::RoundOp, LLVM::RoundOp>;
 using SinOpLowering = ConvertFMFMathToLLVMPattern<math::SinOp, LLVM::SinOp>;
+using SinhOpLowering = ConvertFMFMathToLLVMPattern<math::SinhOp, LLVM::SinhOp>;
+using ASinOpLowering = ConvertFMFMathToLLVMPattern<math::AsinOp, LLVM::ASinOp>;
 using SqrtOpLowering = ConvertFMFMathToLLVMPattern<math::SqrtOp, LLVM::SqrtOp>;
 using FTruncOpLowering =
     ConvertFMFMathToLLVMPattern<math::TruncOp, LLVM::FTruncOp>;
-
+using TanOpLowering = ConvertFMFMathToLLVMPattern<math::TanOp, LLVM::TanOp>;
+using TanhOpLowering = ConvertFMFMathToLLVMPattern<math::TanhOp, LLVM::TanhOp>;
+using ATanOpLowering = ConvertFMFMathToLLVMPattern<math::AtanOp, LLVM::ATanOp>;
+using ATan2OpLowering =
+    ConvertFMFMathToLLVMPattern<math::Atan2Op, LLVM::ATan2Op>;
 // A `CtLz/CtTz/absi(a)` is converted into `CtLz/CtTz/absi(a, false)`.
 template <typename MathOp, typename LLVMOp>
 struct IntOpWithFlagLowering : public ConvertOpToLLVMPattern<MathOp> {
@@ -282,6 +292,40 @@ struct RsqrtOpLowering : public ConvertOpToLLVMPattern<math::RsqrtOp> {
   }
 };
 
+struct IsNaNOpLowering : public ConvertOpToLLVMPattern<math::IsNaNOp> {
+  using ConvertOpToLLVMPattern<math::IsNaNOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(math::IsNaNOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto operandType = adaptor.getOperand().getType();
+
+    if (!operandType || !LLVM::isCompatibleType(operandType))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::IsFPClass>(
+        op, op.getType(), adaptor.getOperand(), llvm::fcNan);
+    return success();
+  }
+};
+
+struct IsFiniteOpLowering : public ConvertOpToLLVMPattern<math::IsFiniteOp> {
+  using ConvertOpToLLVMPattern<math::IsFiniteOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(math::IsFiniteOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto operandType = adaptor.getOperand().getType();
+
+    if (!operandType || !LLVM::isCompatibleType(operandType))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::IsFPClass>(
+        op, op.getType(), adaptor.getOperand(), llvm::fcFinite);
+    return success();
+  }
+};
+
 struct ConvertMathToLLVMPass
     : public impl::ConvertMathToLLVMPassBase<ConvertMathToLLVMPass> {
   using Base::Base;
@@ -298,18 +342,22 @@ struct ConvertMathToLLVMPass
 };
 } // namespace
 
-void mlir::populateMathToLLVMConversionPatterns(LLVMTypeConverter &converter,
-                                                RewritePatternSet &patterns,
-                                                bool approximateLog1p) {
+void mlir::populateMathToLLVMConversionPatterns(
+    const LLVMTypeConverter &converter, RewritePatternSet &patterns,
+    bool approximateLog1p, PatternBenefit benefit) {
   if (approximateLog1p)
-    patterns.add<Log1pOpLowering>(converter);
+    patterns.add<Log1pOpLowering>(converter, benefit);
   // clang-format off
   patterns.add<
+    IsNaNOpLowering,
+    IsFiniteOpLowering,
     AbsFOpLowering,
     AbsIOpLowering,
     CeilOpLowering,
     CopySignOpLowering,
     CosOpLowering,
+    CoshOpLowering,
+    AcosOpLowering,
     CountLeadingZerosOpLowering,
     CountTrailingZerosOpLowering,
     CtPopFOpLowering,
@@ -327,9 +375,15 @@ void mlir::populateMathToLLVMConversionPatterns(LLVMTypeConverter &converter,
     RoundOpLowering,
     RsqrtOpLowering,
     SinOpLowering,
+    SinhOpLowering,
+    ASinOpLowering,
     SqrtOpLowering,
-    FTruncOpLowering
-  >(converter);
+    FTruncOpLowering,
+    TanOpLowering,
+    TanhOpLowering,
+    ATanOpLowering,
+    ATan2OpLowering
+  >(converter, benefit);
   // clang-format on
 }
 

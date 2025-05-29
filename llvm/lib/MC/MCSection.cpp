@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/MC/MCSection.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/MC/MCContext.h"
@@ -24,7 +23,7 @@ MCSection::MCSection(SectionVariant V, StringRef Name, bool IsText,
                      bool IsVirtual, MCSymbol *Begin)
     : Begin(Begin), BundleGroupBeforeFirstInst(false), HasInstructions(false),
       HasLayout(false), IsRegistered(false), IsText(IsText),
-      IsVirtual(IsVirtual), Name(Name), Variant(V) {
+      IsVirtual(IsVirtual), LinkerRelaxable(false), Name(Name), Variant(V) {
   DummyFragment.setParent(this);
   // The initial subsection number is 0. Create a fragment list.
   CurFragList = &Subsections.emplace_back(0u, FragList{}).second;

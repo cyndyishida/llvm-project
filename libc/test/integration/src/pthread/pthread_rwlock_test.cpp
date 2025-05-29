@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "hdr/errno_macros.h"
+#include "hdr/time_macros.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/new.h"
 #include "src/__support/OSUtil/syscall.h"
@@ -40,9 +42,7 @@
 #include "src/time/clock_gettime.h"
 #include "src/unistd/fork.h"
 #include "test/IntegrationTest/test.h"
-#include <errno.h>
 #include <pthread.h>
-#include <time.h>
 
 namespace LIBC_NAMESPACE_DECL {
 namespace rwlock {
@@ -324,8 +324,8 @@ struct ThreadGuard {
   ~ThreadGuard() {
     if (!LIBC_NAMESPACE::getenv("LIBC_PTHREAD_RWLOCK_TEST_VERBOSE"))
       return;
-    pid_t pid = LIBC_NAMESPACE::syscall_impl(SYS_getpid);
-    pid_t tid = LIBC_NAMESPACE::syscall_impl(SYS_gettid);
+    pid_t pid = static_cast<pid_t>(LIBC_NAMESPACE::syscall_impl(SYS_getpid));
+    pid_t tid = static_cast<pid_t>(LIBC_NAMESPACE::syscall_impl(SYS_gettid));
     io_mutex->lock(LIBC_NAMESPACE::cpp::nullopt, true);
     LIBC_NAMESPACE::printf("process %d thread %d: ", pid, tid);
     for (size_t i = 0; i < cursor; ++i)

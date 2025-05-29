@@ -87,8 +87,8 @@ static cl::opt<std::string> AssumeFileName(
              "supported:\n"
              "  CSharp: .cs\n"
              "  Java: .java\n"
-             "  JavaScript: .mjs .js .ts\n"
-             "  Json: .json\n"
+             "  JavaScript: .js .mjs .cjs .ts\n"
+             "  Json: .json .ipynb\n"
              "  Objective-C: .m .mm\n"
              "  Proto: .proto .protodevel\n"
              "  TableGen: .td\n"
@@ -178,7 +178,7 @@ enum class WNoError { Unknown };
 
 static cl::bits<WNoError> WNoErrorList(
     "Wno-error",
-    cl::desc("If set don't error out on the specified warning type."),
+    cl::desc("If set, don't error out on the specified warning type."),
     cl::values(
         clEnumValN(WNoError::Unknown, "unknown",
                    "If set, unknown format options are only warned about.\n"
@@ -210,6 +210,10 @@ static cl::opt<bool> FailOnIncompleteFormat(
     cl::desc("If set, fail with exit code 1 on incomplete format."),
     cl::init(false), cl::cat(ClangFormatCategory));
 
+static cl::opt<bool> ListIgnored("list-ignored",
+                                 cl::desc("List ignored files."),
+                                 cl::cat(ClangFormatCategory), cl::Hidden);
+
 namespace clang {
 namespace format {
 
@@ -236,9 +240,9 @@ static bool fillRanges(MemoryBuffer *Code,
   IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> InMemoryFileSystem(
       new llvm::vfs::InMemoryFileSystem);
   FileManager Files(FileSystemOptions(), InMemoryFileSystem);
+  DiagnosticOptions DiagOpts;
   DiagnosticsEngine Diagnostics(
-      IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
-      new DiagnosticOptions);
+      IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs), DiagOpts);
   SourceManager Sources(Diagnostics, Files);
   FileID ID = createInMemoryFile("<irrelevant>", *Code, Sources, Files,
                                  InMemoryFileSystem.get());
@@ -347,9 +351,6 @@ static void outputReplacementsXML(const Replacements &Replaces) {
 static bool
 emitReplacementWarnings(const Replacements &Replaces, StringRef AssumedFileName,
                         const std::unique_ptr<llvm::MemoryBuffer> &Code) {
-  if (Replaces.empty())
-    return false;
-
   unsigned Errors = 0;
   if (WarnFormat && !NoWarnFormat) {
     SourceMgr Mgr;
@@ -409,7 +410,7 @@ static bool format(StringRef FileName, bool ErrorOnIncompleteFormat = false) {
   const bool IsSTDIN = FileName == "-";
   if (!OutputXML && Inplace && IsSTDIN) {
     errs() << "error: cannot use -i when reading from stdin.\n";
-    return false;
+    return true;
   }
   // On Windows, overwriting a file with an open file mapping doesn't work,
   // so read the whole file into memory when formatting in-place.
@@ -418,7 +419,7 @@ static bool format(StringRef FileName, bool ErrorOnIncompleteFormat = false) {
           ? MemoryBuffer::getFileAsStream(FileName)
           : MemoryBuffer::getFileOrSTDIN(FileName, /*IsText=*/true);
   if (std::error_code EC = CodeOrErr.getError()) {
-    errs() << EC.message() << "\n";
+    errs() << FileName << ": " << EC.message() << "\n";
     return true;
   }
   std::unique_ptr<llvm::MemoryBuffer> Code = std::move(CodeOrErr.get());
@@ -477,20 +478,21 @@ static bool format(StringRef FileName, bool ErrorOnIncompleteFormat = false) {
   }
 
   if (SortIncludes.getNumOccurrences() != 0) {
+    FormatStyle->SortIncludes = {};
     if (SortIncludes)
-      FormatStyle->SortIncludes = FormatStyle::SI_CaseSensitive;
-    else
-      FormatStyle->SortIncludes = FormatStyle::SI_Never;
+      FormatStyle->SortIncludes.Enabled = true;
   }
   unsigned CursorPosition = Cursor;
   Replacements Replaces = sortIncludes(*FormatStyle, Code->getBuffer(), Ranges,
                                        AssumedFileName, &CursorPosition);
 
+  const bool IsJson = FormatStyle->isJson();
+
   // To format JSON insert a variable to trick the code into thinking its
   // JavaScript.
-  if (FormatStyle->isJson() && !FormatStyle->DisableFormat) {
-    auto Err = Replaces.add(tooling::Replacement(
-        tooling::Replacement(AssumedFileName, 0, 0, "x = ")));
+  if (IsJson && !FormatStyle->DisableFormat) {
+    auto Err =
+        Replaces.add(tooling::Replacement(AssumedFileName, 0, 0, "x = "));
     if (Err)
       llvm::errs() << "Bad Json variable insertion\n";
   }
@@ -506,19 +508,21 @@ static bool format(StringRef FileName, bool ErrorOnIncompleteFormat = false) {
   Replacements FormatChanges =
       reformat(*FormatStyle, *ChangedCode, Ranges, AssumedFileName, &Status);
   Replaces = Replaces.merge(FormatChanges);
-  if (OutputXML || DryRun) {
-    if (DryRun)
-      return emitReplacementWarnings(Replaces, AssumedFileName, Code);
+  if (DryRun) {
+    return Replaces.size() > (IsJson ? 1u : 0u) &&
+           emitReplacementWarnings(Replaces, AssumedFileName, Code);
+  }
+  if (OutputXML) {
     outputXML(Replaces, FormatChanges, Status, Cursor, CursorPosition);
   } else {
     IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> InMemoryFileSystem(
         new llvm::vfs::InMemoryFileSystem);
     FileManager Files(FileSystemOptions(), InMemoryFileSystem);
 
-    IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts(new DiagnosticOptions());
+    DiagnosticOptions DiagOpts;
     ClangFormatDiagConsumer IgnoreDiagnostics;
     DiagnosticsEngine Diagnostics(
-        IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs), &*DiagOpts,
+        IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs), DiagOpts,
         &IgnoreDiagnostics, false);
     SourceManager Sources(Diagnostics, Files);
     FileID ID = createInMemoryFile(AssumedFileName, *Code, Sources, Files,
@@ -699,11 +703,14 @@ int main(int argc, const char **argv) {
       FileNames.push_back(Line);
       LineNo++;
     }
-    errs() << "Clang-formating " << LineNo << " files\n";
+    errs() << "Clang-formatting " << LineNo << " files\n";
   }
 
-  if (FileNames.empty())
+  if (FileNames.empty()) {
+    if (isIgnored(AssumeFileName))
+      return 0;
     return clang::format::format("-", FailOnIncompleteFormat);
+  }
 
   if (FileNames.size() > 1 &&
       (!Offsets.empty() || !Lengths.empty() || !LineRanges.empty())) {
@@ -715,7 +722,13 @@ int main(int argc, const char **argv) {
   unsigned FileNo = 1;
   bool Error = false;
   for (const auto &FileName : FileNames) {
-    if (isIgnored(FileName))
+    const bool Ignored = isIgnored(FileName);
+    if (ListIgnored) {
+      if (Ignored)
+        outs() << FileName << '\n';
+      continue;
+    }
+    if (Ignored)
       continue;
     if (Verbose) {
       errs() << "Formatting [" << FileNo++ << "/" << FileNames.size() << "] "
