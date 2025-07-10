@@ -380,12 +380,15 @@ Module *Module::getPrivateModuleFragment() const {
   return nullptr;
 }
 
-void Module::getExportedModules(SmallVectorImpl<Module *> &Exported) const {
+template <typename ModulePtrT>
+static std::enable_if_t<std::is_same_v<ModulePtrT, Module *> ||
+                            std::is_same_v<ModulePtrT, const Module *>,
+                        void>
+getExportedModulesImpl(SmallVectorImpl<ModulePtrT> &Exported,
+                       const Module *InputMod) {
   // All non-explicit submodules are exported.
-  for (std::vector<Module *>::const_iterator I = SubModules.begin(),
-                                             E = SubModules.end();
-       I != E; ++I) {
-    Module *Mod = *I;
+  for (Module *I : InputMod->submodules()) {
+    Module *Mod = I;
     if (!Mod->IsExplicit)
       Exported.push_back(Mod);
   }
@@ -394,9 +397,9 @@ void Module::getExportedModules(SmallVectorImpl<Module *> &Exported) const {
   bool AnyWildcard = false;
   bool UnrestrictedWildcard = false;
   SmallVector<Module *, 4> WildcardRestrictions;
-  for (unsigned I = 0, N = Exports.size(); I != N; ++I) {
-    Module *Mod = Exports[I].getPointer();
-    if (!Exports[I].getInt()) {
+  for (unsigned I = 0, N = InputMod->Exports.size(); I != N; ++I) {
+    Module *Mod = InputMod->Exports[I].getPointer();
+    if (!InputMod->Exports[I].getInt()) {
       // Export a named module directly; no wildcards involved.
       Exported.push_back(Mod);
 
@@ -409,7 +412,7 @@ void Module::getExportedModules(SmallVectorImpl<Module *> &Exported) const {
     if (UnrestrictedWildcard)
       continue;
 
-    if (Module *Restriction = Exports[I].getPointer())
+    if (Module *Restriction = InputMod->Exports[I].getPointer())
       WildcardRestrictions.push_back(Restriction);
     else {
       WildcardRestrictions.clear();
@@ -422,8 +425,8 @@ void Module::getExportedModules(SmallVectorImpl<Module *> &Exported) const {
   if (!AnyWildcard)
     return;
 
-  for (unsigned I = 0, N = Imports.size(); I != N; ++I) {
-    Module *Mod = Imports[I];
+  for (unsigned I = 0, N = InputMod->Imports.size(); I != N; ++I) {
+    ModulePtrT Mod = InputMod->Imports[I];
     bool Acceptable = UnrestrictedWildcard;
     if (!Acceptable) {
       // Check whether this module meets one of the restrictions.
@@ -441,6 +444,15 @@ void Module::getExportedModules(SmallVectorImpl<Module *> &Exported) const {
 
     Exported.push_back(Mod);
   }
+}
+
+void Module::getExportedModules(
+    SmallVectorImpl<const Module *> &Exported) const {
+  getExportedModulesImpl(Exported, this);
+}
+
+void Module::getExportedModules(SmallVectorImpl<Module *> &Exported) const {
+  getExportedModulesImpl(Exported, this);
 }
 
 void Module::buildVisibleModulesCache() const {

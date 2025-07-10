@@ -848,6 +848,8 @@ public:
   /// directly exported), not the complete set of exported modules.
   void getExportedModules(SmallVectorImpl<Module *> &Exported) const;
 
+  void getExportedModules(SmallVectorImpl<const Module *> &Exported) const;
+
   static StringRef getModuleInputBufferName() {
     return "<module-includes>";
   }
