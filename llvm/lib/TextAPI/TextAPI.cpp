@@ -13,4 +13,113 @@
 
 #include "llvm-c/TextAPI.h"
 
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/Support/CBindingWrapping.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/TextAPI/InterfaceFile.h"
+#include "llvm/TextAPI/TextAPIReader.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <string>
+
+using namespace llvm;
+using namespace llvm::MachO;
+
+namespace {
+
+/// A cache entry for one real path. The modification time and size form a cheap
+/// validity stamp: if either changed since we parsed, the file is re-parsed.
+struct CacheEntry {
+  uint64_t MTime = 0;
+  uint64_t Size = 0;
+  std::unique_ptr<InterfaceFile> File;
+};
+
+/// The opaque context: a parse cache plus a lock guarding it, since the linker
+/// parses inputs concurrently.
+struct TextAPIContext {
+  std::mutex Mutex;
+  StringMap<CacheEntry> Cache;
+};
+
+} // namespace
+
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TextAPIContext, LLVMTextAPIContextRef)
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(InterfaceFile, LLVMTextAPIRef)
+
+/// Duplicate \p Message into a malloc'd C string the caller frees with
+/// LLVMDisposeMessage (which calls free), matching the rest of llvm-c.
+static char *copyCString(const Twine &Message) {
+  SmallString<128> Storage;
+  StringRef Ref = Message.toStringRef(Storage);
+  return strdup(Ref.str().c_str());
+}
+
 unsigned LLVMTextAPIGetAPIVersion(void) { return LLVM_TEXTAPI_VERSION; }
+
+LLVMTextAPIContextRef LLVMTextAPIContextCreate(void) {
+  return wrap(new TextAPIContext());
+}
+
+void LLVMTextAPIContextDispose(LLVMTextAPIContextRef Ctx) {
+  delete unwrap(Ctx);
+}
+
+LLVMTextAPIRef LLVMTextAPIParse(LLVMTextAPIContextRef CtxRef, const char *Path,
+                                char **OutError) {
+  if (OutError)
+    *OutError = nullptr;
+
+  TextAPIContext *Ctx = unwrap(CtxRef);
+
+  // Resolve symlinks so two paths to the same file share one cache entry.
+  SmallString<256> RealPath;
+  if (std::error_code EC = sys::fs::real_path(Path, RealPath)) {
+    if (OutError)
+      *OutError = copyCString(Twine(Path) + ": " + EC.message());
+    return nullptr;
+  }
+
+  sys::fs::file_status Status;
+  if (std::error_code EC = sys::fs::status(RealPath, Status)) {
+    if (OutError)
+      *OutError = copyCString(RealPath + ": " + EC.message());
+    return nullptr;
+  }
+  uint64_t MTime = static_cast<uint64_t>(
+      Status.getLastModificationTime().time_since_epoch().count());
+  uint64_t Size = Status.getSize();
+
+  std::lock_guard<std::mutex> Lock(Ctx->Mutex);
+
+  CacheEntry &Entry = Ctx->Cache[RealPath];
+  if (Entry.File && Entry.MTime == MTime && Entry.Size == Size)
+    return wrap(Entry.File.get());
+
+  ErrorOr<std::unique_ptr<MemoryBuffer>> BufOrErr =
+      MemoryBuffer::getFile(RealPath);
+  if (!BufOrErr) {
+    if (OutError)
+      *OutError = copyCString(RealPath + ": " + BufOrErr.getError().message());
+    return nullptr;
+  }
+
+  Expected<std::unique_ptr<InterfaceFile>> FileOrErr =
+      TextAPIReader::get((*BufOrErr)->getMemBufferRef());
+  if (!FileOrErr) {
+    if (OutError)
+      *OutError =
+          copyCString(RealPath + ": " + toString(FileOrErr.takeError()));
+    return nullptr;
+  }
+
+  Entry.MTime = MTime;
+  Entry.Size = Size;
+  Entry.File = std::move(*FileOrErr);
+  return wrap(Entry.File.get());
+}

@@ -78,6 +78,52 @@ LLVM_C_EXTERN_C_BEGIN
 LLVM_C_ABI unsigned LLVMTextAPIGetAPIVersion(void);
 
 /**
+ * A context owns a cache of parsed .tbd files.
+ *
+ * Files parsed through a context (see LLVMTextAPIParse) are owned by it and
+ * remain valid until the context is disposed. Re-parsing the same file through
+ * the same context returns the previously parsed handle instead of parsing
+ * again. This mirrors the lifetime model of clang's CXIndex.
+ *
+ * A context is not thread-safe for concurrent disposal, but concurrent
+ * LLVMTextAPIParse calls on the same context are safe.
+ */
+typedef struct LLVMTextAPIOpaqueContext *LLVMTextAPIContextRef;
+
+/**
+ * A parsed .tbd file (all target slices). Owned by the context that parsed it;
+ * do not dispose it directly.
+ */
+typedef struct LLVMTextAPIOpaqueFile *LLVMTextAPIRef;
+
+/**
+ * Create an empty context (parse cache). Pair with LLVMTextAPIContextDispose.
+ */
+LLVM_C_ABI LLVMTextAPIContextRef LLVMTextAPIContextCreate(void);
+
+/**
+ * Dispose a context, freeing every file parsed through it. All
+ * LLVMTextAPIRef handles obtained from this context become invalid.
+ */
+LLVM_C_ABI void LLVMTextAPIContextDispose(LLVMTextAPIContextRef Ctx);
+
+/**
+ * Parse the .tbd file at \p Path, or return a cached result.
+ *
+ * The cache is keyed on the file's real (symlink-resolved) path together with
+ * its modification time and size, so an unchanged file is parsed only once
+ * (subsequent calls return the same handle), while a file edited in place is
+ * re-parsed.
+ *
+ * On success returns a non-NULL handle owned by \p Ctx. On failure returns
+ * NULL and, if \p OutError is non-NULL, stores a malloc'd diagnostic string in
+ * *OutError that the caller must release with LLVMDisposeMessage. *OutError is
+ * set to NULL on success.
+ */
+LLVM_C_ABI LLVMTextAPIRef LLVMTextAPIParse(LLVMTextAPIContextRef Ctx,
+                                           const char *Path, char **OutError);
+
+/**
  * @}
  */
 
