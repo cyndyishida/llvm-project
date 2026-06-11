@@ -70,6 +70,8 @@
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/TextAPI/Architecture.h"
 #include "llvm/TextAPI/InterfaceFile.h"
+#include "llvm-c/TextAPI.h" // prototype: drive .tbd loading through the C API
+#include <cstdlib>
 
 #include <optional>
 #include <type_traits>
@@ -1941,6 +1943,44 @@ DylibFile::DylibFile(const InterfaceFile &interface, DylibFile *umbrella,
   installName = saver().save(interface.getInstallName());
   compatibilityVersion = interface.getCompatibilityVersion().rawValue();
   currentVersion = interface.getCurrentVersion().rawValue();
+
+  // PROTOTYPE: when LLD_TAPI_CAPI_PROBE is set, load this same .tbd through the
+  // stable C API (llvm-c/TextAPI.h) and verify it yields the same install name
+  // and versions LLD computed from InterfaceFile directly. This demonstrates an
+  // ld adopting the C API for .tbd loading during a real link.
+  if (::getenv("LLD_TAPI_CAPI_PROBE") && interface.getPath().ends_with(".tbd")) {
+    std::string tbdPath = interface.getPath().str();
+    LLVMTextAPIContextRef cctx = LLVMTextAPIContextCreate();
+    char *cerr = nullptr;
+    if (LLVMTextAPIRef cfile = LLVMTextAPIParse(cctx, tbdPath.c_str(), &cerr)) {
+      char *cInstall = LLVMTextAPICopyInstallName(cfile);
+      // arm64 request exercises the C API's arm64->arm64e fallback too.
+      LLVMTextAPISliceRef cslice =
+          LLVMTextAPIGetSlice(cfile, /*CPU_TYPE_ARM64=*/0x0100000c,
+                              /*CPU_SUBTYPE_ARM64_ALL=*/0,
+                              LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
+      unsigned nExports =
+          cslice ? LLVMTextAPISliceGetExportedSymbolCount(cslice) : 0;
+      message("[llvm-c/TextAPI] " + tbdPath + ": install-name=" +
+              std::string(cInstall) + " current=" +
+              std::to_string(LLVMTextAPIGetCurrentVersion(cfile)) +
+              " archs=" +
+              std::to_string(LLVMTextAPIGetArchitectureCount(cfile)) +
+              " arm64-slice-exports=" + std::to_string(nExports));
+      if (StringRef(cInstall) != interface.getInstallName())
+        warn("[llvm-c/TextAPI] install-name mismatch vs InterfaceFile");
+      if (LLVMTextAPIGetCurrentVersion(cfile) != currentVersion)
+        warn("[llvm-c/TextAPI] current-version mismatch vs InterfaceFile");
+      if (cslice)
+        LLVMTextAPISliceDispose(cslice);
+      ::free(cInstall);
+    } else {
+      warn("[llvm-c/TextAPI] parse failed: " + std::string(cerr ? cerr : "?"));
+      ::free(cerr);
+    }
+    LLVMTextAPIContextDispose(cctx);
+  }
+
   for (const auto &rpath : interface.rpaths())
     if (rpath.first == config->platformInfo.target)
       rpaths.push_back(saver().save(rpath.second));
