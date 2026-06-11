@@ -10,6 +10,7 @@ add_llvm_unittest(TextAPITests
   TextStubV4Tests.cpp
   TextStubV5Tests.cpp
   RecordTests.cpp
+  TextAPICTest.cpp
   )
 
 target_link_libraries(TextAPITests PRIVATE LLVMTestingSupport)
