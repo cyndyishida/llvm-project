@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/BinaryFormat/MachO.h"
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -53,11 +54,20 @@ struct TextAPIContext {
   StringMap<CacheEntry> Cache;
 };
 
-/// One architecture slice: the exported symbols of the backing file that apply
-/// to the selected architecture, captured at selection time for O(1) indexed
-/// access. The Symbols themselves are owned by the file (and thus the context).
+/// One exported symbol of a slice: the Mach-O linker symbol name (synthesized
+/// to match tapi::LinkerInterfaceFile, e.g. "_OBJC_CLASS_$_Foo") together with
+/// the originating llvm::MachO::Symbol it derives from (owned by the file),
+/// which carries the flags (weak, etc.).
+struct TextAPIExportedSymbol {
+  std::string Name;
+  const Symbol *Source;
+};
+
+/// One architecture slice: the file's exported symbols flattened to the names
+/// the static linker consumes, captured at selection time for O(1) indexed
+/// access. The source Symbols remain owned by the file (and its context).
 struct TextAPISlice {
-  std::vector<const Symbol *> Exports;
+  std::vector<TextAPIExportedSymbol> Exports;
 };
 
 } // namespace
@@ -65,7 +75,7 @@ struct TextAPISlice {
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TextAPIContext, LLVMTextAPIContextRef)
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(InterfaceFile, LLVMTextAPIRef)
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TextAPISlice, LLVMTextAPISliceRef)
-DEFINE_SIMPLE_CONVERSION_FUNCTIONS(Symbol, LLVMTextAPISymbolRef)
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TextAPIExportedSymbol, LLVMTextAPISymbolRef)
 
 /// Duplicate \p Message into a malloc'd C string the caller frees with
 /// LLVMDisposeMessage (which calls free), matching the rest of llvm-c.
@@ -192,10 +202,46 @@ LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType
     return nullptr;
   }
 
+  // Flatten exported symbols to the names the static linker consumes, matching
+  // tapi::LinkerInterfaceFile::create: ObjC classes expand to two symbols, ObjC
+  // EH-types/ivars are mangled, and the legacy ObjC1 ABI class mangling is used
+  // only for i386/macOS.
+  bool UseObjC1ABI =
+      File->getPlatforms().count(PLATFORM_MACOS) && Arch == AK_i386;
+
   auto Slice = std::make_unique<TextAPISlice>();
-  for (const Symbol *Sym : File->exports())
-    if (Sym->hasArchitecture(Arch))
-      Slice->Exports.push_back(Sym);
+  auto addExport = [&](std::string Name, const Symbol *Source) {
+    Slice->Exports.push_back({std::move(Name), Source});
+  };
+  for (const Symbol *Sym : File->symbols()) {
+    if (Sym->isUndefined() || !Sym->hasArchitecture(Arch))
+      continue;
+
+    switch (Sym->getKind()) {
+    case EncodeKind::GlobalSymbol:
+      // $ld$ symbols are linker directives rather than real exports, except
+      // $ld$previous. This matches LinkerInterfaceFile.
+      if (Sym->getName().starts_with("$ld$") &&
+          !Sym->getName().starts_with("$ld$previous"))
+        continue;
+      addExport(Sym->getName().str(), Sym);
+      break;
+    case EncodeKind::ObjectiveCClass:
+      if (UseObjC1ABI) {
+        addExport(".objc_class_name_" + Sym->getName().str(), Sym);
+      } else {
+        addExport("_OBJC_CLASS_$_" + Sym->getName().str(), Sym);
+        addExport("_OBJC_METACLASS_$_" + Sym->getName().str(), Sym);
+      }
+      break;
+    case EncodeKind::ObjectiveCClassEHType:
+      addExport("_OBJC_EHTYPE_$_" + Sym->getName().str(), Sym);
+      break;
+    case EncodeKind::ObjectiveCInstanceVariable:
+      addExport("_OBJC_IVAR_$_" + Sym->getName().str(), Sym);
+      break;
+    }
+  }
   return wrap(Slice.release());
 }
 
@@ -209,16 +255,16 @@ unsigned LLVMTextAPISliceGetExportedSymbolCount(LLVMTextAPISliceRef Slice) {
 
 LLVMTextAPISymbolRef
 LLVMTextAPISliceGetExportedSymbol(LLVMTextAPISliceRef Slice, unsigned Index) {
-  const std::vector<const Symbol *> &Exports = unwrap(Slice)->Exports;
+  const std::vector<TextAPIExportedSymbol> &Exports = unwrap(Slice)->Exports;
   if (Index >= Exports.size())
     return nullptr;
-  return wrap(Exports[Index]);
+  return wrap(&Exports[Index]);
 }
 
 char *LLVMTextAPISymbolCopyName(LLVMTextAPISymbolRef Symbol) {
-  return copyCString(unwrap(Symbol)->getName());
+  return copyCString(unwrap(Symbol)->Name);
 }
 
 LLVMBool LLVMTextAPISymbolIsWeakDefined(LLVMTextAPISymbolRef Symbol) {
-  return unwrap(Symbol)->isWeakDefined();
+  return unwrap(Symbol)->Source->isWeakDefined();
 }

@@ -53,6 +53,52 @@ static const char TBDv4Slices[] =
     "    weak-symbols: [ _weak_arm64 ]\n"
     "...\n";
 
+// ObjC symbols (ObjC2 ABI: arm64): a class, an ivar, and a plain global.
+static const char TBDv4ObjC[] =
+    "--- !tapi-tbd\n"
+    "tbd-version: 4\n"
+    "targets:  [ arm64-macos ]\n"
+    "install-name: /usr/lib/libobjcish.dylib\n"
+    "exports:\n"
+    "  - targets: [ arm64-macos ]\n"
+    "    symbols: [ _plain ]\n"
+    "    objc-classes: [ Widget ]\n"
+    "    objc-ivars: [ Widget._count ]\n"
+    "...\n";
+
+// An ObjC EH-type (arm64).
+static const char TBDv4ObjCEH[] =
+    "--- !tapi-tbd\n"
+    "tbd-version: 4\n"
+    "targets:  [ arm64-macos ]\n"
+    "install-name: /usr/lib/libeh.dylib\n"
+    "exports:\n"
+    "  - targets: [ arm64-macos ]\n"
+    "    objc-eh-types: [ Bumper ]\n"
+    "...\n";
+
+// An ObjC class on i386/macOS, which uses the legacy ObjC1 ABI mangling.
+static const char TBDv4ObjCLegacy[] =
+    "--- !tapi-tbd\n"
+    "tbd-version: 4\n"
+    "targets:  [ i386-macos ]\n"
+    "install-name: /usr/lib/liblegacy.dylib\n"
+    "exports:\n"
+    "  - targets: [ i386-macos ]\n"
+    "    objc-classes: [ Widget ]\n"
+    "...\n";
+
+// $ld$ linker-directive symbols alongside a real export (arm64).
+static const char TBDv4Ld[] =
+    "--- !tapi-tbd\n"
+    "tbd-version: 4\n"
+    "targets:  [ arm64-macos ]\n"
+    "install-name: /usr/lib/libld.dylib\n"
+    "exports:\n"
+    "  - targets: [ arm64-macos ]\n"
+    "    symbols: [ _real, \"$ld$add$os10.5$_added\", \"$ld$previous$abc\" ]\n"
+    "...\n";
+
 // Write `Contents` to a fresh temp .tbd file and return its path.
 static std::string writeTempTBD(StringRef Contents) {
   SmallString<128> Path;
@@ -331,6 +377,79 @@ TEST(TextAPICSlice, MissingArchitectureReportsError) {
   ASSERT_NE(Err, nullptr);
   LLVMDisposeMessage(Err);
 
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// ObjC class -> _OBJC_CLASS_$_ + _OBJC_METACLASS_$_, ivar -> _OBJC_IVAR_$_,
+// plain global unchanged. Matches tapi::LinkerInterfaceFile (ObjC2 ABI).
+TEST(TextAPICSlice, ObjCSymbolManglingObjC2ABI) {
+  std::string Path = writeTempTBD(TBDv4ObjC);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+  ASSERT_NE(Arm, nullptr);
+  EXPECT_EQ(sliceExportNames(Arm),
+            (std::set<std::string>{"_plain", "_OBJC_CLASS_$_Widget",
+                                   "_OBJC_METACLASS_$_Widget",
+                                   "_OBJC_IVAR_$_Widget._count"}));
+  LLVMTextAPISliceDispose(Arm);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// An ObjC EH-type yields the _OBJC_EHTYPE_$_ symbol (the reader also synthesizes
+// the backing class, so this checks membership rather than the exact set).
+TEST(TextAPICSlice, ObjCEHTypeMangling) {
+  std::string Path = writeTempTBD(TBDv4ObjCEH);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+  ASSERT_NE(Arm, nullptr);
+  EXPECT_EQ(sliceExportNames(Arm).count("_OBJC_EHTYPE_$_Bumper"), 1u);
+  LLVMTextAPISliceDispose(Arm);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// i386/macOS uses the legacy .objc_class_name_ mangling and emits no metaclass.
+TEST(TextAPICSlice, ObjCClassLegacyABIi386) {
+  std::string Path = writeTempTBD(TBDv4ObjCLegacy);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  LLVMTextAPISliceRef X86 = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_I386, MachO::CPU_SUBTYPE_I386_ALL, nullptr);
+  ASSERT_NE(X86, nullptr);
+  std::set<std::string> Syms = sliceExportNames(X86);
+  EXPECT_EQ(Syms.count(".objc_class_name_Widget"), 1u);
+  EXPECT_EQ(Syms.count("_OBJC_CLASS_$_Widget"), 0u);
+  EXPECT_EQ(Syms.count("_OBJC_METACLASS_$_Widget"), 0u);
+  LLVMTextAPISliceDispose(X86);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// $ld$ directives are dropped, except $ld$previous. Matches LinkerInterfaceFile.
+TEST(TextAPICSlice, FiltersLdSymbols) {
+  std::string Path = writeTempTBD(TBDv4Ld);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+  ASSERT_NE(Arm, nullptr);
+  EXPECT_EQ(sliceExportNames(Arm),
+            (std::set<std::string>{"_real", "$ld$previous$abc"}));
+  LLVMTextAPISliceDispose(Arm);
   LLVMTextAPIContextDispose(Ctx);
   sys::fs::remove(Path);
 }
