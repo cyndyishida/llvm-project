@@ -186,17 +186,33 @@ typedef struct LLVMTextAPIOpaqueSlice *LLVMTextAPISliceRef;
 typedef struct LLVMTextAPIOpaqueSymbol *LLVMTextAPISymbolRef;
 
 /**
+ * Flags controlling slice selection (mirrors tapi::ParsingFlags).
+ */
+typedef enum {
+  /** Default: if the exact CPU subtype is absent, fall back to an
+   *  ABI-compatible slice of the same CPU type. */
+  LLVMTextAPIParsingFlagsNone = 0,
+  /** Require an exact CPU-subtype match; do not fall back. */
+  LLVMTextAPIParsingFlagsExactCPUSubType = 1u << 0,
+} LLVMTextAPIParsingFlags;
+
+/**
  * Select the slice of \p File matching the Mach-O (\p CPUType, \p CPUSubType)
  * pair (the subtype distinguishes e.g. arm64 from arm64e).
  *
+ * If the exact subtype is not present, the closest ABI-compatible slice of the
+ * same CPU type is chosen, unless LLVMTextAPIParsingFlagsExactCPUSubType is set
+ * in \p Flags. This matches tapi::LinkerInterfaceFile's arch selection.
+ *
  * On success returns a non-NULL slice the caller releases with
- * LLVMTextAPISliceDispose. If the file contains no such architecture, returns
- * NULL and, if \p OutError is non-NULL, stores a malloc'd diagnostic in
- * *OutError that the caller releases with LLVMDisposeMessage.
+ * LLVMTextAPISliceDispose. If no compatible architecture is found, returns NULL
+ * and, if \p OutError is non-NULL, stores a malloc'd diagnostic in *OutError
+ * that the caller releases with LLVMDisposeMessage.
  */
 LLVM_C_ABI LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef File,
                                                    uint32_t CPUType,
                                                    uint32_t CPUSubType,
+                                                   uint32_t Flags,
                                                    char **OutError);
 
 /**

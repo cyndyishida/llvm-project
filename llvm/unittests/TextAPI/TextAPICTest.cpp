@@ -314,7 +314,8 @@ TEST(TextAPICSlice, ExportsFilteredByArch) {
   // x86_64 sees only the common symbol.
   char *Err = nullptr;
   LLVMTextAPISliceRef X86 = LLVMTextAPIGetSlice(
-      File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL, &Err);
+      File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL,
+      LLVMTextAPIParsingFlagsNone, &Err);
   ASSERT_NE(X86, nullptr) << (Err ? Err : "");
   EXPECT_EQ(sliceExportNames(X86), (std::set<std::string>{"_common"}));
   EXPECT_EQ(LLVMTextAPISliceGetExportedSymbol(X86, 999), nullptr);
@@ -322,7 +323,8 @@ TEST(TextAPICSlice, ExportsFilteredByArch) {
 
   // arm64 sees the common symbol plus its two arm64-only symbols.
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
-      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
   ASSERT_NE(Arm, nullptr);
   EXPECT_EQ(sliceExportNames(Arm),
             (std::set<std::string>{"_common", "_arm64_only", "_weak_arm64"}));
@@ -339,7 +341,8 @@ TEST(TextAPICSlice, WeakDefinedFlag) {
   ASSERT_NE(File, nullptr);
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
-      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
   ASSERT_NE(Arm, nullptr);
 
   bool SawWeak = false, SawStrong = false;
@@ -372,10 +375,44 @@ TEST(TextAPICSlice, MissingArchitectureReportsError) {
 
   char *Err = nullptr;
   LLVMTextAPISliceRef Slice = LLVMTextAPIGetSlice(
-      File, MachO::CPU_TYPE_ARM, MachO::CPU_SUBTYPE_ARM_V7, &Err);
+      File, MachO::CPU_TYPE_ARM, MachO::CPU_SUBTYPE_ARM_V7,
+      LLVMTextAPIParsingFlagsNone, &Err);
   EXPECT_EQ(Slice, nullptr);
   ASSERT_NE(Err, nullptr);
+  EXPECT_NE(std::string(Err).find("missing required architecture"),
+            std::string::npos);
   LLVMDisposeMessage(Err);
+
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// arm64e falls back to the arm64 slice (same CPU type) unless an exact subtype
+// is demanded, matching LinkerInterfaceFile's getArchForCPU.
+TEST(TextAPICSlice, ArchSubtypeFallback) {
+  std::string Path = writeTempTBD(TBDv4Slices); // x86_64 + arm64, no arm64e
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  // Without ExactCPUSubType: arm64e resolves to the arm64 slice.
+  char *Err = nullptr;
+  LLVMTextAPISliceRef Fallback = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64E,
+      LLVMTextAPIParsingFlagsNone, &Err);
+  ASSERT_NE(Fallback, nullptr) << (Err ? Err : "");
+  EXPECT_EQ(sliceExportNames(Fallback),
+            (std::set<std::string>{"_common", "_arm64_only", "_weak_arm64"}));
+  LLVMTextAPISliceDispose(Fallback);
+
+  // With ExactCPUSubType: there is no arm64e slice, so this fails.
+  char *Err2 = nullptr;
+  LLVMTextAPISliceRef Exact = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64E,
+      LLVMTextAPIParsingFlagsExactCPUSubType, &Err2);
+  EXPECT_EQ(Exact, nullptr);
+  ASSERT_NE(Err2, nullptr);
+  LLVMDisposeMessage(Err2);
 
   LLVMTextAPIContextDispose(Ctx);
   sys::fs::remove(Path);
@@ -390,7 +427,8 @@ TEST(TextAPICSlice, ObjCSymbolManglingObjC2ABI) {
   ASSERT_NE(File, nullptr);
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
-      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
   ASSERT_NE(Arm, nullptr);
   EXPECT_EQ(sliceExportNames(Arm),
             (std::set<std::string>{"_plain", "_OBJC_CLASS_$_Widget",
@@ -410,7 +448,8 @@ TEST(TextAPICSlice, ObjCEHTypeMangling) {
   ASSERT_NE(File, nullptr);
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
-      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
   ASSERT_NE(Arm, nullptr);
   EXPECT_EQ(sliceExportNames(Arm).count("_OBJC_EHTYPE_$_Bumper"), 1u);
   LLVMTextAPISliceDispose(Arm);
@@ -426,7 +465,8 @@ TEST(TextAPICSlice, ObjCClassLegacyABIi386) {
   ASSERT_NE(File, nullptr);
 
   LLVMTextAPISliceRef X86 = LLVMTextAPIGetSlice(
-      File, MachO::CPU_TYPE_I386, MachO::CPU_SUBTYPE_I386_ALL, nullptr);
+      File, MachO::CPU_TYPE_I386, MachO::CPU_SUBTYPE_I386_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
   ASSERT_NE(X86, nullptr);
   std::set<std::string> Syms = sliceExportNames(X86);
   EXPECT_EQ(Syms.count(".objc_class_name_Widget"), 1u);
@@ -445,7 +485,8 @@ TEST(TextAPICSlice, FiltersLdSymbols) {
   ASSERT_NE(File, nullptr);
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
-      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
   ASSERT_NE(Arm, nullptr);
   EXPECT_EQ(sliceExportNames(Arm),
             (std::set<std::string>{"_real", "$ld$previous$abc"}));

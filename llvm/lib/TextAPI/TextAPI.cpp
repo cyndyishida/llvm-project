@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/MachO.h"
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/FileSystem.h"
@@ -146,6 +147,7 @@ LLVMTextAPIRef LLVMTextAPIParse(LLVMTextAPIContextRef CtxRef, const char *Path,
   Entry.MTime = MTime;
   Entry.Size = Size;
   Entry.File = std::move(*FileOrErr);
+  Entry.File->setPath(RealPath);
   return wrap(Entry.File.get());
 }
 
@@ -188,17 +190,50 @@ uint32_t LLVMTextAPIGetCompatibilityVersion(LLVMTextAPIRef File) {
   return unwrap(File)->getCompatibilityVersion().rawValue();
 }
 
+// Reproduce ArchitectureSet::getABICompatibleSlice (an Apple addition not yet
+// in open-source TextAPI): the first arch in the set sharing the requested
+// arch's CPU type, ignoring the subtype.
+static Architecture getABICompatibleSlice(ArchitectureSet Archs,
+                                          Architecture Arch) {
+  uint32_t CPUType = getCPUTypeFromArchitecture(Arch).first;
+  for (Architecture Candidate : Archs)
+    if (getCPUTypeFromArchitecture(Candidate).first == CPUType)
+      return Candidate;
+  return AK_unknown;
+}
+
 LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType,
-                                        uint32_t CPUSubType, char **OutError) {
+                                        uint32_t CPUSubType, uint32_t Flags,
+                                        char **OutError) {
   if (OutError)
     *OutError = nullptr;
 
   InterfaceFile *File = unwrap(FileRef);
-  Architecture Arch = getArchitectureFromCpuType(CPUType, CPUSubType);
-  if (Arch == AK_unknown || !File->getArchitectures().has(Arch)) {
-    if (OutError)
-      *OutError = copyCString("no slice for architecture " +
-                              getArchitectureName(Arch));
+  ArchitectureSet Archs = File->getArchitectures();
+  Architecture Exact = getArchitectureFromCpuType(CPUType, CPUSubType);
+
+  // Select the architecture, matching tapi::LinkerInterfaceFile::getArchForCPU:
+  // an exact match if present; otherwise an ABI-compatible slice of the same
+  // CPU type, unless an exact subtype was demanded.
+  Architecture Arch;
+  if (Archs.has(Exact))
+    Arch = Exact;
+  else if (Flags & LLVMTextAPIParsingFlagsExactCPUSubType)
+    Arch = AK_unknown;
+  else
+    Arch = getABICompatibleSlice(Archs, Exact);
+
+  if (Arch == AK_unknown) {
+    if (OutError) {
+      std::string Msg = (Twine("missing required architecture ") +
+                         getArchitectureName(Exact) + " in file " +
+                         File->getPath())
+                            .str();
+      size_t Count = Archs.count();
+      if (Count > 1)
+        Msg += " (" + std::to_string(Count) + " slices)";
+      *OutError = copyCString(Msg);
+    }
     return nullptr;
   }
 
