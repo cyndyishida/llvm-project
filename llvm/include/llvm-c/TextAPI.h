@@ -173,6 +173,62 @@ LLVM_C_ABI uint32_t LLVMTextAPIGetCurrentVersion(LLVMTextAPIRef File);
 LLVM_C_ABI uint32_t LLVMTextAPIGetCompatibilityVersion(LLVMTextAPIRef File);
 
 /**
+ * A single architecture slice of a file, as the linker consumes it. Created
+ * with LLVMTextAPIGetSlice and released with LLVMTextAPISliceDispose. The
+ * underlying file (and thus the slice's symbols) must outlive the slice.
+ */
+typedef struct LLVMTextAPIOpaqueSlice *LLVMTextAPISliceRef;
+
+/**
+ * A symbol within a slice. Borrowed from the slice; valid while the slice
+ * lives. Do not dispose it directly.
+ */
+typedef struct LLVMTextAPIOpaqueSymbol *LLVMTextAPISymbolRef;
+
+/**
+ * Select the slice of \p File matching the Mach-O (\p CPUType, \p CPUSubType)
+ * pair (the subtype distinguishes e.g. arm64 from arm64e).
+ *
+ * On success returns a non-NULL slice the caller releases with
+ * LLVMTextAPISliceDispose. If the file contains no such architecture, returns
+ * NULL and, if \p OutError is non-NULL, stores a malloc'd diagnostic in
+ * *OutError that the caller releases with LLVMDisposeMessage.
+ */
+LLVM_C_ABI LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef File,
+                                                   uint32_t CPUType,
+                                                   uint32_t CPUSubType,
+                                                   char **OutError);
+
+/**
+ * Release a slice obtained from LLVMTextAPIGetSlice.
+ */
+LLVM_C_ABI void LLVMTextAPISliceDispose(LLVMTextAPISliceRef Slice);
+
+/**
+ * The number of exported (defined) symbols in the slice.
+ */
+LLVM_C_ABI unsigned
+LLVMTextAPISliceGetExportedSymbolCount(LLVMTextAPISliceRef Slice);
+
+/**
+ * The exported symbol at \p Index, in [0, LLVMTextAPISliceGetExportedSymbolCount).
+ * Returns a handle borrowed from the slice, or NULL if \p Index is out of range.
+ */
+LLVM_C_ABI LLVMTextAPISymbolRef
+LLVMTextAPISliceGetExportedSymbol(LLVMTextAPISliceRef Slice, unsigned Index);
+
+/**
+ * Copy a symbol's name. Returns a malloc'd string the caller releases with
+ * LLVMDisposeMessage.
+ */
+LLVM_C_ABI char *LLVMTextAPISymbolCopyName(LLVMTextAPISymbolRef Symbol);
+
+/**
+ * Whether the symbol is a weak definition.
+ */
+LLVM_C_ABI LLVMBool LLVMTextAPISymbolIsWeakDefined(LLVMTextAPISymbolRef Symbol);
+
+/**
  * @}
  */
 

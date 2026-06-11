@@ -21,6 +21,7 @@
 #include "llvm/TextAPI/Architecture.h"
 #include "llvm/TextAPI/ArchitectureSet.h"
 #include "llvm/TextAPI/InterfaceFile.h"
+#include "llvm/TextAPI/Symbol.h"
 #include "llvm/TextAPI/Target.h"
 #include "llvm/TextAPI/TextAPIReader.h"
 
@@ -30,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 using namespace llvm;
 using namespace llvm::MachO;
@@ -51,10 +53,19 @@ struct TextAPIContext {
   StringMap<CacheEntry> Cache;
 };
 
+/// One architecture slice: the exported symbols of the backing file that apply
+/// to the selected architecture, captured at selection time for O(1) indexed
+/// access. The Symbols themselves are owned by the file (and thus the context).
+struct TextAPISlice {
+  std::vector<const Symbol *> Exports;
+};
+
 } // namespace
 
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TextAPIContext, LLVMTextAPIContextRef)
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(InterfaceFile, LLVMTextAPIRef)
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(TextAPISlice, LLVMTextAPISliceRef)
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(Symbol, LLVMTextAPISymbolRef)
 
 /// Duplicate \p Message into a malloc'd C string the caller frees with
 /// LLVMDisposeMessage (which calls free), matching the rest of llvm-c.
@@ -165,4 +176,49 @@ uint32_t LLVMTextAPIGetCurrentVersion(LLVMTextAPIRef File) {
 
 uint32_t LLVMTextAPIGetCompatibilityVersion(LLVMTextAPIRef File) {
   return unwrap(File)->getCompatibilityVersion().rawValue();
+}
+
+LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType,
+                                        uint32_t CPUSubType, char **OutError) {
+  if (OutError)
+    *OutError = nullptr;
+
+  InterfaceFile *File = unwrap(FileRef);
+  Architecture Arch = getArchitectureFromCpuType(CPUType, CPUSubType);
+  if (Arch == AK_unknown || !File->getArchitectures().has(Arch)) {
+    if (OutError)
+      *OutError = copyCString("no slice for architecture " +
+                              getArchitectureName(Arch));
+    return nullptr;
+  }
+
+  auto Slice = std::make_unique<TextAPISlice>();
+  for (const Symbol *Sym : File->exports())
+    if (Sym->hasArchitecture(Arch))
+      Slice->Exports.push_back(Sym);
+  return wrap(Slice.release());
+}
+
+void LLVMTextAPISliceDispose(LLVMTextAPISliceRef Slice) {
+  delete unwrap(Slice);
+}
+
+unsigned LLVMTextAPISliceGetExportedSymbolCount(LLVMTextAPISliceRef Slice) {
+  return static_cast<unsigned>(unwrap(Slice)->Exports.size());
+}
+
+LLVMTextAPISymbolRef
+LLVMTextAPISliceGetExportedSymbol(LLVMTextAPISliceRef Slice, unsigned Index) {
+  const std::vector<const Symbol *> &Exports = unwrap(Slice)->Exports;
+  if (Index >= Exports.size())
+    return nullptr;
+  return wrap(Exports[Index]);
+}
+
+char *LLVMTextAPISymbolCopyName(LLVMTextAPISymbolRef Symbol) {
+  return copyCString(unwrap(Symbol)->getName());
+}
+
+LLVMBool LLVMTextAPISymbolIsWeakDefined(LLVMTextAPISymbolRef Symbol) {
+  return unwrap(Symbol)->isWeakDefined();
 }

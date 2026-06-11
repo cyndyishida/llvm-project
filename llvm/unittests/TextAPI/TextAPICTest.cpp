@@ -13,6 +13,7 @@
 #include "llvm-c/TextAPI.h"
 #include "llvm-c/Core.h" // LLVMDisposeMessage
 #include "llvm/ADT/SmallString.h"
+#include "llvm/BinaryFormat/MachO.h" // CPU_TYPE_*/CPU_SUBTYPE_*
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
@@ -33,6 +34,23 @@ static const char TBDv4MultiArch[] =
     "exports:\n"
     "  - targets: [ x86_64-macos, arm64-macos ]\n"
     "    symbols: [ _foo ]\n"
+    "...\n";
+
+// A file whose slices differ: arm64 carries extra symbols (one weak) that
+// x86_64 does not, to exercise per-arch export filtering and the weak flag.
+static const char TBDv4Slices[] =
+    "--- !tapi-tbd\n"
+    "tbd-version: 4\n"
+    "targets:  [ x86_64-macos, arm64-macos ]\n"
+    "install-name: /usr/lib/libbar.dylib\n"
+    "current-version: 2.0\n"
+    "compatibility-version: 1.0\n"
+    "exports:\n"
+    "  - targets: [ x86_64-macos, arm64-macos ]\n"
+    "    symbols: [ _common ]\n"
+    "  - targets: [ arm64-macos ]\n"
+    "    symbols: [ _arm64_only ]\n"
+    "    weak-symbols: [ _weak_arm64 ]\n"
     "...\n";
 
 // Write `Contents` to a fresh temp .tbd file and return its path.
@@ -220,6 +238,99 @@ TEST(TextAPICWholeFile, OutOfRangeIndexReturnsNull) {
   ASSERT_NE(File, nullptr);
   EXPECT_EQ(LLVMTextAPICopyArchitectureName(File, 999), nullptr);
   EXPECT_EQ(LLVMTextAPICopyTargetTriple(File, 999), nullptr);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// Gather the exported symbol names of a slice into a set, disposing each.
+static std::set<std::string> sliceExportNames(LLVMTextAPISliceRef Slice) {
+  std::set<std::string> Names;
+  for (unsigned I = 0, N = LLVMTextAPISliceGetExportedSymbolCount(Slice); I < N;
+       ++I) {
+    LLVMTextAPISymbolRef Sym = LLVMTextAPISliceGetExportedSymbol(Slice, I);
+    EXPECT_NE(Sym, nullptr);
+    char *Name = LLVMTextAPISymbolCopyName(Sym);
+    EXPECT_NE(Name, nullptr);
+    if (Name) {
+      Names.insert(Name);
+      LLVMDisposeMessage(Name);
+    }
+  }
+  return Names;
+}
+
+TEST(TextAPICSlice, ExportsFilteredByArch) {
+  std::string Path = writeTempTBD(TBDv4Slices);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  // x86_64 sees only the common symbol.
+  char *Err = nullptr;
+  LLVMTextAPISliceRef X86 = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL, &Err);
+  ASSERT_NE(X86, nullptr) << (Err ? Err : "");
+  EXPECT_EQ(sliceExportNames(X86), (std::set<std::string>{"_common"}));
+  EXPECT_EQ(LLVMTextAPISliceGetExportedSymbol(X86, 999), nullptr);
+  LLVMTextAPISliceDispose(X86);
+
+  // arm64 sees the common symbol plus its two arm64-only symbols.
+  LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+  ASSERT_NE(Arm, nullptr);
+  EXPECT_EQ(sliceExportNames(Arm),
+            (std::set<std::string>{"_common", "_arm64_only", "_weak_arm64"}));
+  LLVMTextAPISliceDispose(Arm);
+
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+TEST(TextAPICSlice, WeakDefinedFlag) {
+  std::string Path = writeTempTBD(TBDv4Slices);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL, nullptr);
+  ASSERT_NE(Arm, nullptr);
+
+  bool SawWeak = false, SawStrong = false;
+  for (unsigned I = 0, N = LLVMTextAPISliceGetExportedSymbolCount(Arm); I < N;
+       ++I) {
+    LLVMTextAPISymbolRef Sym = LLVMTextAPISliceGetExportedSymbol(Arm, I);
+    char *Name = LLVMTextAPISymbolCopyName(Sym);
+    if (std::string(Name) == "_weak_arm64") {
+      EXPECT_TRUE(LLVMTextAPISymbolIsWeakDefined(Sym));
+      SawWeak = true;
+    } else {
+      EXPECT_FALSE(LLVMTextAPISymbolIsWeakDefined(Sym));
+      SawStrong = true;
+    }
+    LLVMDisposeMessage(Name);
+  }
+  EXPECT_TRUE(SawWeak);
+  EXPECT_TRUE(SawStrong);
+
+  LLVMTextAPISliceDispose(Arm);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+TEST(TextAPICSlice, MissingArchitectureReportsError) {
+  std::string Path = writeTempTBD(TBDv4Slices); // x86_64 + arm64 only
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  char *Err = nullptr;
+  LLVMTextAPISliceRef Slice = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM, MachO::CPU_SUBTYPE_ARM_V7, &Err);
+  EXPECT_EQ(Slice, nullptr);
+  ASSERT_NE(Err, nullptr);
+  LLVMDisposeMessage(Err);
+
   LLVMTextAPIContextDispose(Ctx);
   sys::fs::remove(Path);
 }
