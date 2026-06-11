@@ -171,8 +171,11 @@ LLVMTextAPIRef LLVMTextAPIParse(LLVMTextAPIContextRef CtxRef, const char *Path,
     return nullptr;
   }
 
-  Expected<std::unique_ptr<InterfaceFile>> FileOrErr =
-      TextAPIReader::get((*BufOrErr)->getMemBufferRef());
+  // Skip target triples this LLVM doesn't recognize (e.g. newer Apple arch
+  // variants), matching tapi::LinkerInterfaceFile::loadFile so real SDK .tbds
+  // parse instead of erroring.
+  Expected<std::unique_ptr<InterfaceFile>> FileOrErr = TextAPIReader::get(
+      (*BufOrErr)->getMemBufferRef(), /*SkipUnknownTriples=*/true);
   if (!FileOrErr) {
     if (OutError)
       *OutError =

@@ -734,6 +734,30 @@ TEST(TextAPICDetect, IsSupported) {
   EXPECT_FALSE(LLVMTextAPIIsSupported("x.tbd", NotTBD, sizeof(NotTBD) - 1));
 }
 
+// Unknown target triples (e.g. newer Apple arch variants like arm64e.x1, as
+// found in shipping SDK .tbds) are skipped rather than failing the parse,
+// matching tapi::LinkerInterfaceFile::loadFile.
+TEST(TextAPICParse, SkipsUnknownTriples) {
+  static const char TBDv4UnknownArch[] =
+      "--- !tapi-tbd\n"
+      "tbd-version: 4\n"
+      "targets:  [ x86_64-macos, arm64e.x1-macos ]\n"
+      "install-name: /usr/lib/libskip.dylib\n"
+      "...\n";
+  std::string Path = writeTempTBD(TBDv4UnknownArch);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  char *Err = nullptr;
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), &Err);
+  ASSERT_NE(File, nullptr) << (Err ? Err : "");
+  // Only the recognized x86_64 slice survives.
+  EXPECT_EQ(LLVMTextAPIGetArchitectureCount(File), 1u);
+  char *A = LLVMTextAPICopyArchitectureName(File, 0);
+  EXPECT_STREQ(A, "x86_64");
+  LLVMDisposeMessage(A);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
 // The whole-file flag/version accessors on a slice.
 TEST(TextAPICSlice, WholeFileFlags) {
   std::string Path = writeTempTBD(TBDv4Flags);
