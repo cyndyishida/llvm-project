@@ -124,6 +124,55 @@ LLVM_C_ABI LLVMTextAPIRef LLVMTextAPIParse(LLVMTextAPIContextRef Ctx,
                                            const char *Path, char **OutError);
 
 /**
+ * The number of distinct architectures the file supports, across all of its
+ * target slices (e.g. {x86_64, arm64, arm64e} counts as 3).
+ */
+LLVM_C_ABI unsigned LLVMTextAPIGetArchitectureCount(LLVMTextAPIRef File);
+
+/**
+ * Copy the name of the architecture at \p Index (e.g. "arm64e"), where Index is
+ * in [0, LLVMTextAPIGetArchitectureCount). Returns a malloc'd string the caller
+ * releases with LLVMDisposeMessage, or NULL if \p Index is out of range.
+ */
+LLVM_C_ABI char *LLVMTextAPICopyArchitectureName(LLVMTextAPIRef File,
+                                                 unsigned Index);
+
+/**
+ * The number of target slices in the file. A target is an
+ * (architecture, platform) pair, so this is the finer-grained companion to
+ * LLVMTextAPIGetArchitectureCount (e.g. arm64-macos and arm64-ios are two
+ * targets but one architecture).
+ */
+LLVM_C_ABI unsigned LLVMTextAPIGetTargetCount(LLVMTextAPIRef File);
+
+/**
+ * Copy the LLVM target-triple string for the slice at \p Index (e.g.
+ * "arm64-apple-ios17.0"), where Index is in [0, LLVMTextAPIGetTargetCount).
+ * Returns a malloc'd string the caller releases with LLVMDisposeMessage, or
+ * NULL if \p Index is out of range.
+ */
+LLVM_C_ABI char *LLVMTextAPICopyTargetTriple(LLVMTextAPIRef File,
+                                             unsigned Index);
+
+/**
+ * Copy the install name of the file (e.g. "/usr/lib/libSystem.B.dylib").
+ * Returns a malloc'd string the caller releases with LLVMDisposeMessage.
+ */
+LLVM_C_ABI char *LLVMTextAPICopyInstallName(LLVMTextAPIRef File);
+
+/**
+ * The current version, as a Mach-O packed 32-bit version
+ * (major << 16 | minor << 8 | patch).
+ */
+LLVM_C_ABI uint32_t LLVMTextAPIGetCurrentVersion(LLVMTextAPIRef File);
+
+/**
+ * The compatibility version, as a Mach-O packed 32-bit version
+ * (major << 16 | minor << 8 | patch).
+ */
+LLVM_C_ABI uint32_t LLVMTextAPIGetCompatibilityVersion(LLVMTextAPIRef File);
+
+/**
  * @}
  */
 

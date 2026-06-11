@@ -18,11 +18,15 @@
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/TextAPI/Architecture.h"
+#include "llvm/TextAPI/ArchitectureSet.h"
 #include "llvm/TextAPI/InterfaceFile.h"
+#include "llvm/TextAPI/Target.h"
 #include "llvm/TextAPI/TextAPIReader.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -122,4 +126,43 @@ LLVMTextAPIRef LLVMTextAPIParse(LLVMTextAPIContextRef CtxRef, const char *Path,
   Entry.Size = Size;
   Entry.File = std::move(*FileOrErr);
   return wrap(Entry.File.get());
+}
+
+unsigned LLVMTextAPIGetArchitectureCount(LLVMTextAPIRef File) {
+  return static_cast<unsigned>(unwrap(File)->getArchitectures().count());
+}
+
+char *LLVMTextAPICopyArchitectureName(LLVMTextAPIRef File, unsigned Index) {
+  unsigned I = 0;
+  for (Architecture Arch : unwrap(File)->getArchitectures()) {
+    if (I++ == Index)
+      return copyCString(getArchitectureName(Arch));
+  }
+  return nullptr;
+}
+
+unsigned LLVMTextAPIGetTargetCount(LLVMTextAPIRef File) {
+  auto Targets = unwrap(File)->targets();
+  return static_cast<unsigned>(std::distance(Targets.begin(), Targets.end()));
+}
+
+char *LLVMTextAPICopyTargetTriple(LLVMTextAPIRef File, unsigned Index) {
+  unsigned I = 0;
+  for (const Target &T : unwrap(File)->targets()) {
+    if (I++ == Index)
+      return copyCString(getTargetTripleName(T));
+  }
+  return nullptr;
+}
+
+char *LLVMTextAPICopyInstallName(LLVMTextAPIRef File) {
+  return copyCString(unwrap(File)->getInstallName());
+}
+
+uint32_t LLVMTextAPIGetCurrentVersion(LLVMTextAPIRef File) {
+  return unwrap(File)->getCurrentVersion().rawValue();
+}
+
+uint32_t LLVMTextAPIGetCompatibilityVersion(LLVMTextAPIRef File) {
+  return unwrap(File)->getCompatibilityVersion().rawValue();
 }

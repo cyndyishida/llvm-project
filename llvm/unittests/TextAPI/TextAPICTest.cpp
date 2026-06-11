@@ -16,6 +16,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
+#include <set>
 #include <string>
 
 using namespace llvm;
@@ -151,6 +152,76 @@ TEST(TextAPICParse, NullOutErrorIsTolerated) {
       LLVMTextAPIParse(Ctx, "/definitely/not/here/libnope.tbd", nullptr);
   EXPECT_EQ(File, nullptr);
   LLVMTextAPIContextDispose(Ctx);
+}
+
+// Collect the result of an (count, index->Copy) accessor pair into a set,
+// disposing each returned string.
+static std::set<std::string>
+collectStrings(LLVMTextAPIRef File, unsigned (*Count)(LLVMTextAPIRef),
+               char *(*Copy)(LLVMTextAPIRef, unsigned)) {
+  std::set<std::string> Result;
+  for (unsigned I = 0, N = Count(File); I < N; ++I) {
+    char *S = Copy(File, I);
+    EXPECT_NE(S, nullptr);
+    if (S) {
+      Result.insert(S);
+      LLVMDisposeMessage(S);
+    }
+  }
+  return Result;
+}
+
+TEST(TextAPICWholeFile, ArchitecturesAndTargets) {
+  std::string Path = writeTempTBD(TBDv4MultiArch);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  char *Err = nullptr;
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), &Err);
+  ASSERT_NE(File, nullptr) << (Err ? Err : "");
+
+  // Two slices, two distinct architectures.
+  EXPECT_EQ(LLVMTextAPIGetArchitectureCount(File), 2u);
+  std::set<std::string> Archs = collectStrings(
+      File, LLVMTextAPIGetArchitectureCount, LLVMTextAPICopyArchitectureName);
+  EXPECT_EQ(Archs, (std::set<std::string>{"x86_64", "arm64"}));
+
+  EXPECT_EQ(LLVMTextAPIGetTargetCount(File), 2u);
+  std::set<std::string> Triples = collectStrings(
+      File, LLVMTextAPIGetTargetCount, LLVMTextAPICopyTargetTriple);
+  EXPECT_EQ(Triples,
+            (std::set<std::string>{"x86_64-apple-macos", "arm64-apple-macos"}));
+
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+TEST(TextAPICWholeFile, InstallNameAndVersions) {
+  std::string Path = writeTempTBD(TBDv4MultiArch);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  char *Name = LLVMTextAPICopyInstallName(File);
+  ASSERT_NE(Name, nullptr);
+  EXPECT_STREQ(Name, "/usr/lib/libfoo.dylib");
+  LLVMDisposeMessage(Name);
+
+  // current-version: 1.2.3  compatibility-version: 1.0
+  EXPECT_EQ(LLVMTextAPIGetCurrentVersion(File), (1u << 16) | (2u << 8) | 3u);
+  EXPECT_EQ(LLVMTextAPIGetCompatibilityVersion(File), (1u << 16));
+
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+TEST(TextAPICWholeFile, OutOfRangeIndexReturnsNull) {
+  std::string Path = writeTempTBD(TBDv4MultiArch);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+  EXPECT_EQ(LLVMTextAPICopyArchitectureName(File, 999), nullptr);
+  EXPECT_EQ(LLVMTextAPICopyTargetTriple(File, 999), nullptr);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
 }
 
 } // namespace
