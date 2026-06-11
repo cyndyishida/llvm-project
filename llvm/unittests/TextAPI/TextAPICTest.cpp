@@ -154,6 +154,23 @@ static const char TBDv5Inlined[] = R"({
 ]
 })";
 
+// A TBD v4 file carrying $ld$ back-deployment directives (hide/weak/add/
+// install_name/compatibility_version), all gated on os10.5.
+static const char TBDv4Ld2[] =
+    "--- !tapi-tbd\n"
+    "tbd-version: 4\n"
+    "targets:  [ x86_64-macos ]\n"
+    "install-name: /usr/lib/libld2.dylib\n"
+    "current-version: 3.0\n"
+    "compatibility-version: 1.0\n"
+    "exports:\n"
+    "  - targets: [ x86_64-macos ]\n"
+    "    symbols: [ _keep, _hideme, _weakme, \"$ld$hide$os10.5$_hideme\", "
+    "\"$ld$weak$os10.5$_weakme\", \"$ld$add$os10.5$_addme\", "
+    "\"$ld$install_name$os10.5$/new/name\", "
+    "\"$ld$compatibility_version$os10.5$2.0\" ]\n"
+    "...\n";
+
 // Write `Contents` to a fresh temp .tbd file and return its path.
 static std::string writeTempTBD(StringRef Contents) {
   SmallString<128> Path;
@@ -370,7 +387,7 @@ TEST(TextAPICSlice, ExportsFilteredByArch) {
   char *Err = nullptr;
   LLVMTextAPISliceRef X86 = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL,
-      LLVMTextAPIParsingFlagsNone, &Err);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, &Err);
   ASSERT_NE(X86, nullptr) << (Err ? Err : "");
   EXPECT_EQ(sliceExportNames(X86), (std::set<std::string>{"_common"}));
   EXPECT_EQ(LLVMTextAPISliceGetExportedSymbol(X86, 999), nullptr);
@@ -379,7 +396,7 @@ TEST(TextAPICSlice, ExportsFilteredByArch) {
   // arm64 sees the common symbol plus its two arm64-only symbols.
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(Arm, nullptr);
   EXPECT_EQ(sliceExportNames(Arm),
             (std::set<std::string>{"_common", "_arm64_only", "_weak_arm64"}));
@@ -397,7 +414,7 @@ TEST(TextAPICSlice, WeakDefinedFlag) {
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(Arm, nullptr);
 
   bool SawWeak = false, SawStrong = false;
@@ -431,7 +448,7 @@ TEST(TextAPICSlice, MissingArchitectureReportsError) {
   char *Err = nullptr;
   LLVMTextAPISliceRef Slice = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM, MachO::CPU_SUBTYPE_ARM_V7,
-      LLVMTextAPIParsingFlagsNone, &Err);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, &Err);
   EXPECT_EQ(Slice, nullptr);
   ASSERT_NE(Err, nullptr);
   EXPECT_NE(std::string(Err).find("missing required architecture"),
@@ -454,7 +471,7 @@ TEST(TextAPICSlice, ArchSubtypeFallback) {
   char *Err = nullptr;
   LLVMTextAPISliceRef Fallback = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64E,
-      LLVMTextAPIParsingFlagsNone, &Err);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, &Err);
   ASSERT_NE(Fallback, nullptr) << (Err ? Err : "");
   EXPECT_EQ(sliceExportNames(Fallback),
             (std::set<std::string>{"_common", "_arm64_only", "_weak_arm64"}));
@@ -464,7 +481,7 @@ TEST(TextAPICSlice, ArchSubtypeFallback) {
   char *Err2 = nullptr;
   LLVMTextAPISliceRef Exact = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64E,
-      LLVMTextAPIParsingFlagsExactCPUSubType, &Err2);
+      LLVMTextAPIParsingFlagsExactCPUSubType, /*minOS=*/0, &Err2);
   EXPECT_EQ(Exact, nullptr);
   ASSERT_NE(Err2, nullptr);
   LLVMDisposeMessage(Err2);
@@ -483,7 +500,7 @@ TEST(TextAPICSlice, ObjCSymbolManglingObjC2ABI) {
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(Arm, nullptr);
   EXPECT_EQ(sliceExportNames(Arm),
             (std::set<std::string>{"_plain", "_OBJC_CLASS_$_Widget",
@@ -504,7 +521,7 @@ TEST(TextAPICSlice, ObjCEHTypeMangling) {
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(Arm, nullptr);
   EXPECT_EQ(sliceExportNames(Arm).count("_OBJC_EHTYPE_$_Bumper"), 1u);
   LLVMTextAPISliceDispose(Arm);
@@ -521,7 +538,7 @@ TEST(TextAPICSlice, ObjCClassLegacyABIi386) {
 
   LLVMTextAPISliceRef X86 = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_I386, MachO::CPU_SUBTYPE_I386_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(X86, nullptr);
   std::set<std::string> Syms = sliceExportNames(X86);
   EXPECT_EQ(Syms.count(".objc_class_name_Widget"), 1u);
@@ -541,7 +558,7 @@ TEST(TextAPICSlice, FiltersLdSymbols) {
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(Arm, nullptr);
   EXPECT_EQ(sliceExportNames(Arm),
             (std::set<std::string>{"_real", "$ld$previous$abc"}));
@@ -562,7 +579,7 @@ TEST(TextAPICSlice, Metadata) {
 
   LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(Arm, nullptr);
 
   EXPECT_STREQ(LLVMTextAPISliceGetParentFrameworkName(Arm), "TheUmbrella");
@@ -589,7 +606,7 @@ TEST(TextAPICSlice, Metadata) {
 
   LLVMTextAPISliceRef X86 = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(X86, nullptr);
   // NOTE: the v5 reader applies parent_umbrellas to every file target (it
   // ignores the per-umbrella "targets" key), so both slices report it. The
@@ -618,7 +635,7 @@ TEST(TextAPICSlice, InlinedFrameworks) {
 
   LLVMTextAPISliceRef Root = LLVMTextAPIGetSlice(
       File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
-      LLVMTextAPIParsingFlagsNone, nullptr);
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
   ASSERT_NE(Root, nullptr);
 
   ASSERT_EQ(LLVMTextAPISliceGetInlinedFrameworkCount(Root), 1u);
@@ -629,7 +646,8 @@ TEST(TextAPICSlice, InlinedFrameworks) {
   char *Err2 = nullptr;
   LLVMTextAPISliceRef Inlined = LLVMTextAPISliceGetInlinedFramework(
       Root, "/usr/lib/libinlined.dylib", MachO::CPU_TYPE_ARM64,
-      MachO::CPU_SUBTYPE_ARM64_ALL, LLVMTextAPIParsingFlagsNone, &Err2);
+      MachO::CPU_SUBTYPE_ARM64_ALL, LLVMTextAPIParsingFlagsNone, /*minOS=*/0,
+      &Err2);
   ASSERT_NE(Inlined, nullptr) << (Err2 ? Err2 : "");
   EXPECT_EQ(sliceExportNames(Inlined), (std::set<std::string>{"_inlinedSym"}));
   LLVMTextAPISliceDispose(Inlined);
@@ -638,12 +656,62 @@ TEST(TextAPICSlice, InlinedFrameworks) {
   char *Err3 = nullptr;
   LLVMTextAPISliceRef Missing = LLVMTextAPISliceGetInlinedFramework(
       Root, "/usr/lib/libnope.dylib", MachO::CPU_TYPE_ARM64,
-      MachO::CPU_SUBTYPE_ARM64_ALL, LLVMTextAPIParsingFlagsNone, &Err3);
+      MachO::CPU_SUBTYPE_ARM64_ALL, LLVMTextAPIParsingFlagsNone, /*minOS=*/0,
+      &Err3);
   EXPECT_EQ(Missing, nullptr);
   ASSERT_NE(Err3, nullptr);
   LLVMDisposeMessage(Err3);
 
   LLVMTextAPISliceDispose(Root);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// $ld$ directives apply only when their os<version> condition equals the
+// requested minOS, and then hide/add exports and override install
+// name/compatibility version — matching LinkerInterfaceFile. $ld$weak only
+// hides under DisallowWeakImports.
+TEST(TextAPICSlice, LdDirectives) {
+  std::string Path = writeTempTBD(TBDv4Ld2);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  const uint32_t MinOS105 = (10u << 16) | (5u << 8); // 10.5
+  const uint32_t MinOS110 = 11u << 16;               // 11.0
+
+  // Matching minOS: hide removes _hideme, add introduces _addme, $ld$weak is a
+  // no-op without DisallowWeakImports, and install-name/compat are overridden.
+  LLVMTextAPISliceRef S = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL,
+      LLVMTextAPIParsingFlagsNone, MinOS105, nullptr);
+  ASSERT_NE(S, nullptr);
+  EXPECT_EQ(sliceExportNames(S),
+            (std::set<std::string>{"_keep", "_weakme", "_addme"}));
+  EXPECT_STREQ(LLVMTextAPISliceGetInstallName(S), "/new/name");
+  EXPECT_EQ(LLVMTextAPISliceGetCurrentVersion(S), 3u << 16);       // unchanged
+  EXPECT_EQ(LLVMTextAPISliceGetCompatibilityVersion(S), 2u << 16); // overridden
+  LLVMTextAPISliceDispose(S);
+
+  // Matching minOS + DisallowWeakImports: $ld$weak now also hides _weakme.
+  LLVMTextAPISliceRef SW = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL,
+      LLVMTextAPIParsingFlagsDisallowWeakImports, MinOS105, nullptr);
+  ASSERT_NE(SW, nullptr);
+  EXPECT_EQ(sliceExportNames(SW), (std::set<std::string>{"_keep", "_addme"}));
+  LLVMTextAPISliceDispose(SW);
+
+  // Non-matching minOS: every directive is ignored.
+  LLVMTextAPISliceRef S2 = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL,
+      LLVMTextAPIParsingFlagsNone, MinOS110, nullptr);
+  ASSERT_NE(S2, nullptr);
+  EXPECT_EQ(sliceExportNames(S2),
+            (std::set<std::string>{"_keep", "_hideme", "_weakme"}));
+  EXPECT_STREQ(LLVMTextAPISliceGetInstallName(S2), "/usr/lib/libld2.dylib");
+  EXPECT_EQ(LLVMTextAPISliceGetCompatibilityVersion(S2), 1u << 16);
+  LLVMTextAPISliceDispose(S2);
+
   LLVMTextAPIContextDispose(Ctx);
   sys::fs::remove(Path);
 }

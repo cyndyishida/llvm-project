@@ -28,12 +28,14 @@
 #include "llvm/TextAPI/Target.h"
 #include "llvm/TextAPI/TextAPIReader.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace llvm;
@@ -57,20 +59,22 @@ struct TextAPIContext {
 };
 
 /// One exported symbol of a slice: the Mach-O linker symbol name (synthesized
-/// to match tapi::LinkerInterfaceFile, e.g. "_OBJC_CLASS_$_Foo") together with
-/// the originating llvm::MachO::Symbol it derives from (owned by the file),
-/// which carries the flags (weak, etc.).
+/// to match tapi::LinkerInterfaceFile, e.g. "_OBJC_CLASS_$_Foo") and whether it
+/// is a weak definition. Synthesized $ld$add exports have no source symbol, so
+/// the weak flag is stored directly rather than referencing a Symbol.
 struct TextAPIExportedSymbol {
   std::string Name;
-  const Symbol *Source;
+  bool WeakDefined;
 };
 
 /// One architecture slice: the file's read-path data flattened for a single
-/// selected architecture (mirroring tapi::LinkerInterfaceFile). The exported
-/// symbols' source Symbols remain owned by the file (and its context).
+/// selected architecture (mirroring tapi::LinkerInterfaceFile).
 struct TextAPISlice {
   const InterfaceFile *File = nullptr; // source file (for inlined resolution)
-  std::string ParentFrameworkName;     // empty if none
+  std::string InstallName;
+  uint32_t CurrentVersion = 0;
+  uint32_t CompatibilityVersion = 0;
+  std::string ParentFrameworkName; // empty if none
   std::vector<std::pair<uint32_t, uint32_t>> PlatformsAndMinOS; // (platform, ver)
   std::vector<std::string> RPaths;
   std::vector<std::string> ReexportedLibraries;
@@ -94,6 +98,14 @@ static char *copyCString(const Twine &Message) {
   SmallString<128> Storage;
   StringRef Ref = Message.toStringRef(Storage);
   return strdup(Ref.str().c_str());
+}
+
+/// Parse a version string (e.g. "10.5") into a Mach-O packed version, matching
+/// tapi's parseVersion32 (zero on an empty or malformed string).
+static PackedVersion parseVersion32(StringRef Str) {
+  PackedVersion Version;
+  Version.parse32(Str);
+  return Version;
 }
 
 unsigned LLVMTextAPIGetAPIVersion(void) { return LLVM_TEXTAPI_VERSION; }
@@ -217,7 +229,7 @@ static Architecture getABICompatibleSlice(ArchitectureSet Archs,
 // nullptr with *OutError set.
 static TextAPISlice *buildSlice(const InterfaceFile *File, uint32_t CPUType,
                                 uint32_t CPUSubType, uint32_t Flags,
-                                char **OutError) {
+                                uint32_t PackedMinOS, char **OutError) {
   if (OutError)
     *OutError = nullptr;
 
@@ -260,6 +272,15 @@ static TextAPISlice *buildSlice(const InterfaceFile *File, uint32_t CPUType,
 
   // Per-arch metadata, mirroring tapi::LinkerInterfaceFile::init.
   Slice->IsNotForDyldSharedCache = File->isOSLibNotForSharedCache();
+  Slice->InstallName = File->getInstallName().str();
+  Slice->CurrentVersion = File->getCurrentVersion().rawValue();
+  Slice->CompatibilityVersion = File->getCompatibilityVersion().rawValue();
+
+  // $ld$ conditions match the deployment version with its patch level dropped.
+  PackedVersion MinOS(PackedVersion(PackedMinOS).getMajor(),
+                      PackedVersion(PackedMinOS).getMinor(), 0);
+  bool DisallowWeakImports = Flags & LLVMTextAPIParsingFlagsDisallowWeakImports;
+  std::vector<std::string> IgnoreExports;
 
   for (const std::pair<Target, std::string> &Umbrella : File->umbrellas())
     if (Umbrella.first.Arch == Arch) {
@@ -289,12 +310,56 @@ static TextAPISlice *buildSlice(const InterfaceFile *File, uint32_t CPUType,
       if (T.Arch == Arch)
         Slice->AllowableClients.push_back(Lib.getInstallName().str());
 
-  auto addExport = [&](std::string Name, const Symbol *Source) {
-    Slice->Exports.push_back({std::move(Name), Source});
+  // Pre-scan global export symbols for $ld$ linker directives, which can hide
+  // or add exports and override the install name / compatibility version.
+  auto processLd = [&](StringRef Name) {
+    // $ld$ <action> $ <condition> $ <symbol-name>
+    if (!Name.starts_with("$ld$"))
+      return;
+    StringRef Rest = Name.drop_front(4);
+    StringRef Action, Condition, SymbolName;
+    std::tie(Action, Rest) = Rest.split('$');
+    std::tie(Condition, SymbolName) = Rest.split('$');
+    if (Action.empty() || Condition.empty() || SymbolName.empty())
+      return;
+    if (!Condition.starts_with("os"))
+      return;
+    if (parseVersion32(Condition.drop_front(2)) != MinOS)
+      return;
+
+    if (Action == "hide") {
+      IgnoreExports.push_back(SymbolName.str());
+    } else if (Action == "add") {
+      Slice->Exports.push_back({SymbolName.str(), /*WeakDefined=*/false});
+    } else if (Action == "weak") {
+      if (DisallowWeakImports)
+        IgnoreExports.push_back(SymbolName.str());
+    } else if (Action == "install_name") {
+      Slice->InstallName = SymbolName.str();
+      if (Slice->InstallName == "/System/Library/Frameworks/"
+                                "ApplicationServices.framework/Versions/A/"
+                                "ApplicationServices")
+        Slice->CompatibilityVersion = PackedVersion(1, 0, 0).rawValue();
+    } else if (Action == "compatibility_version") {
+      Slice->CompatibilityVersion = parseVersion32(SymbolName).rawValue();
+    }
+  };
+  for (const Symbol *Sym : File->exports())
+    if (Sym->getKind() == EncodeKind::GlobalSymbol && Sym->hasArchitecture(Arch))
+      processLd(Sym->getName());
+  llvm::sort(IgnoreExports);
+  IgnoreExports.erase(std::unique(IgnoreExports.begin(), IgnoreExports.end()),
+                      IgnoreExports.end());
+
+  // Add a flattened export unless a $ld$hide/$ld$weak directive ignored it.
+  auto addExport = [&](std::string Name, bool WeakDefined) {
+    if (!std::binary_search(IgnoreExports.begin(), IgnoreExports.end(), Name))
+      Slice->Exports.push_back({std::move(Name), WeakDefined});
   };
   for (const Symbol *Sym : File->symbols()) {
     if (Sym->isUndefined() || !Sym->hasArchitecture(Arch))
       continue;
+    bool Weak = Sym->isWeakDefined();
 
     switch (Sym->getKind()) {
     case EncodeKind::GlobalSymbol:
@@ -303,25 +368,25 @@ static TextAPISlice *buildSlice(const InterfaceFile *File, uint32_t CPUType,
       if (Sym->getName().starts_with("$ld$") &&
           !Sym->getName().starts_with("$ld$previous"))
         continue;
-      addExport(Sym->getName().str(), Sym);
+      addExport(Sym->getName().str(), Weak);
       break;
     case EncodeKind::ObjectiveCClass:
       if (UseObjC1ABI) {
-        addExport(".objc_class_name_" + Sym->getName().str(), Sym);
+        addExport(".objc_class_name_" + Sym->getName().str(), Weak);
       } else {
-        addExport("_OBJC_CLASS_$_" + Sym->getName().str(), Sym);
-        addExport("_OBJC_METACLASS_$_" + Sym->getName().str(), Sym);
+        addExport("_OBJC_CLASS_$_" + Sym->getName().str(), Weak);
+        addExport("_OBJC_METACLASS_$_" + Sym->getName().str(), Weak);
       }
       break;
     case EncodeKind::ObjectiveCClassEHType:
-      addExport("_OBJC_EHTYPE_$_" + Sym->getName().str(), Sym);
+      addExport("_OBJC_EHTYPE_$_" + Sym->getName().str(), Weak);
       break;
     case EncodeKind::ObjectiveCInstanceVariable:
-      addExport("_OBJC_IVAR_$_" + Sym->getName().str(), Sym);
+      addExport("_OBJC_IVAR_$_" + Sym->getName().str(), Weak);
       break;
     }
 
-    if (Sym->isWeakDefined())
+    if (Weak)
       Slice->HasWeakDefinedExports = true;
   }
 
@@ -336,13 +401,25 @@ static TextAPISlice *buildSlice(const InterfaceFile *File, uint32_t CPUType,
 
 LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType,
                                         uint32_t CPUSubType, uint32_t Flags,
-                                        char **OutError) {
-  return wrap(
-      buildSlice(unwrap(FileRef), CPUType, CPUSubType, Flags, OutError));
+                                        uint32_t PackedMinOS, char **OutError) {
+  return wrap(buildSlice(unwrap(FileRef), CPUType, CPUSubType, Flags,
+                         PackedMinOS, OutError));
 }
 
 void LLVMTextAPISliceDispose(LLVMTextAPISliceRef Slice) {
   delete unwrap(Slice);
+}
+
+const char *LLVMTextAPISliceGetInstallName(LLVMTextAPISliceRef Slice) {
+  return unwrap(Slice)->InstallName.c_str();
+}
+
+uint32_t LLVMTextAPISliceGetCurrentVersion(LLVMTextAPISliceRef Slice) {
+  return unwrap(Slice)->CurrentVersion;
+}
+
+uint32_t LLVMTextAPISliceGetCompatibilityVersion(LLVMTextAPISliceRef Slice) {
+  return unwrap(Slice)->CompatibilityVersion;
 }
 
 unsigned LLVMTextAPISliceGetExportedSymbolCount(LLVMTextAPISliceRef Slice) {
@@ -362,7 +439,7 @@ char *LLVMTextAPISymbolCopyName(LLVMTextAPISymbolRef Symbol) {
 }
 
 LLVMBool LLVMTextAPISymbolIsWeakDefined(LLVMTextAPISymbolRef Symbol) {
-  return unwrap(Symbol)->Source->isWeakDefined();
+  return unwrap(Symbol)->WeakDefined;
 }
 
 const char *LLVMTextAPISliceGetParentFrameworkName(LLVMTextAPISliceRef Slice) {
@@ -436,14 +513,16 @@ const char *LLVMTextAPISliceGetInlinedFrameworkName(LLVMTextAPISliceRef Slice,
 
 LLVMTextAPISliceRef LLVMTextAPISliceGetInlinedFramework(
     LLVMTextAPISliceRef Slice, const char *InstallName, uint32_t CPUType,
-    uint32_t CPUSubType, uint32_t Flags, char **OutError) {
+    uint32_t CPUSubType, uint32_t Flags, uint32_t PackedMinOS,
+    char **OutError) {
   if (OutError)
     *OutError = nullptr;
 
   const InterfaceFile *File = unwrap(Slice)->File;
   for (const std::shared_ptr<InterfaceFile> &Doc : File->documents())
     if (Doc->getInstallName() == InstallName)
-      return wrap(buildSlice(Doc.get(), CPUType, CPUSubType, Flags, OutError));
+      return wrap(buildSlice(Doc.get(), CPUType, CPUSubType, Flags, PackedMinOS,
+                             OutError));
 
   if (OutError)
     *OutError = copyCString("no such inlined framework");

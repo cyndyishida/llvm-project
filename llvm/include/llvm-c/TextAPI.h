@@ -194,6 +194,9 @@ typedef enum {
   LLVMTextAPIParsingFlagsNone = 0,
   /** Require an exact CPU-subtype match; do not fall back. */
   LLVMTextAPIParsingFlagsExactCPUSubType = 1u << 0,
+  /** Treat `$ld$weak$os<minOS>$<symbol>` directives as hiding the symbol from
+   *  the slice's exports (back-deployment weak-import handling). */
+  LLVMTextAPIParsingFlagsDisallowWeakImports = 1u << 1,
 } LLVMTextAPIParsingFlags;
 
 /**
@@ -204,6 +207,10 @@ typedef enum {
  * same CPU type is chosen, unless LLVMTextAPIParsingFlagsExactCPUSubType is set
  * in \p Flags. This matches tapi::LinkerInterfaceFile's arch selection.
  *
+ * \p PackedMinOS is the client's minimum deployment version (Mach-O packed),
+ * used only to gate `$ld$` back-deployment directives whose `os<version>`
+ * condition must equal it (its patch level is ignored). Pass 0 if not relevant.
+ *
  * On success returns a non-NULL slice the caller releases with
  * LLVMTextAPISliceDispose. If no compatible architecture is found, returns NULL
  * and, if \p OutError is non-NULL, stores a malloc'd diagnostic in *OutError
@@ -213,12 +220,32 @@ LLVM_C_ABI LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef File,
                                                    uint32_t CPUType,
                                                    uint32_t CPUSubType,
                                                    uint32_t Flags,
+                                                   uint32_t PackedMinOS,
                                                    char **OutError);
 
 /**
  * Release a slice obtained from LLVMTextAPIGetSlice.
  */
 LLVM_C_ABI void LLVMTextAPISliceDispose(LLVMTextAPISliceRef Slice);
+
+/**
+ * The slice's install name. Borrowed; valid while the slice lives. This is the
+ * per-slice value and reflects any `$ld$install_name` override; the file-level
+ * LLVMTextAPICopyInstallName returns the raw, un-overridden name.
+ */
+LLVM_C_ABI const char *LLVMTextAPISliceGetInstallName(LLVMTextAPISliceRef Slice);
+
+/**
+ * The slice's current version (Mach-O packed), reflecting any override.
+ */
+LLVM_C_ABI uint32_t LLVMTextAPISliceGetCurrentVersion(LLVMTextAPISliceRef Slice);
+
+/**
+ * The slice's compatibility version (Mach-O packed), reflecting any
+ * `$ld$compatibility_version` override.
+ */
+LLVM_C_ABI uint32_t
+LLVMTextAPISliceGetCompatibilityVersion(LLVMTextAPISliceRef Slice);
 
 /**
  * The number of exported (defined) symbols in the slice.
@@ -317,7 +344,8 @@ LLVMTextAPISliceGetInlinedFrameworkName(LLVMTextAPISliceRef Slice,
 
 /**
  * Resolve the inlined framework whose install name is \p InstallName into its
- * own slice for the given architecture (selected as in LLVMTextAPIGetSlice).
+ * own slice for the given architecture (selected as in LLVMTextAPIGetSlice;
+ * \p Flags and \p PackedMinOS are applied to the sub-document the same way).
  *
  * Returns a new slice the caller releases with LLVMTextAPISliceDispose, or NULL
  * and, if \p OutError is non-NULL, a malloc'd diagnostic in *OutError (released
@@ -326,7 +354,7 @@ LLVMTextAPISliceGetInlinedFrameworkName(LLVMTextAPISliceRef Slice,
  */
 LLVM_C_ABI LLVMTextAPISliceRef LLVMTextAPISliceGetInlinedFramework(
     LLVMTextAPISliceRef Slice, const char *InstallName, uint32_t CPUType,
-    uint32_t CPUSubType, uint32_t Flags, char **OutError);
+    uint32_t CPUSubType, uint32_t Flags, uint32_t PackedMinOS, char **OutError);
 
 /**
  * @}
