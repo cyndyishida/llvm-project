@@ -23,6 +23,7 @@
 #include "llvm/TextAPI/Architecture.h"
 #include "llvm/TextAPI/ArchitectureSet.h"
 #include "llvm/TextAPI/InterfaceFile.h"
+#include "llvm/TextAPI/PackedVersion.h"
 #include "llvm/TextAPI/Symbol.h"
 #include "llvm/TextAPI/Target.h"
 #include "llvm/TextAPI/TextAPIReader.h"
@@ -64,10 +65,17 @@ struct TextAPIExportedSymbol {
   const Symbol *Source;
 };
 
-/// One architecture slice: the file's exported symbols flattened to the names
-/// the static linker consumes, captured at selection time for O(1) indexed
-/// access. The source Symbols remain owned by the file (and its context).
+/// One architecture slice: the file's read-path data flattened for a single
+/// selected architecture (mirroring tapi::LinkerInterfaceFile). The exported
+/// symbols' source Symbols remain owned by the file (and its context).
 struct TextAPISlice {
+  std::string ParentFrameworkName; // empty if none
+  std::vector<std::pair<uint32_t, uint32_t>> PlatformsAndMinOS; // (platform, ver)
+  std::vector<std::string> RPaths;
+  std::vector<std::string> ReexportedLibraries;
+  std::vector<std::string> AllowableClients;
+  bool HasWeakDefinedExports = false;
+  bool IsNotForDyldSharedCache = false;
   std::vector<TextAPIExportedSymbol> Exports;
 };
 
@@ -245,6 +253,38 @@ LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType
       File->getPlatforms().count(PLATFORM_MACOS) && Arch == AK_i386;
 
   auto Slice = std::make_unique<TextAPISlice>();
+
+  // Per-arch metadata, mirroring tapi::LinkerInterfaceFile::init.
+  Slice->IsNotForDyldSharedCache = File->isOSLibNotForSharedCache();
+
+  for (const std::pair<Target, std::string> &Umbrella : File->umbrellas())
+    if (Umbrella.first.Arch == Arch) {
+      Slice->ParentFrameworkName = Umbrella.second;
+      break;
+    }
+
+  for (const Target &T : File->targets()) {
+    if (T.Arch != Arch || T.Platform == PLATFORM_UNKNOWN)
+      continue;
+    Slice->PlatformsAndMinOS.emplace_back(
+        static_cast<uint32_t>(T.Platform),
+        PackedVersion(T.MinDeployment).rawValue());
+  }
+
+  for (const std::pair<Target, std::string> &RPath : File->rpaths())
+    if (RPath.first.Arch == Arch)
+      Slice->RPaths.push_back(RPath.second);
+
+  for (const InterfaceFileRef &Lib : File->reexportedLibraries())
+    for (const Target &T : Lib.targets())
+      if (T.Arch == Arch)
+        Slice->ReexportedLibraries.push_back(Lib.getInstallName().str());
+
+  for (const InterfaceFileRef &Lib : File->allowableClients())
+    for (const Target &T : Lib.targets())
+      if (T.Arch == Arch)
+        Slice->AllowableClients.push_back(Lib.getInstallName().str());
+
   auto addExport = [&](std::string Name, const Symbol *Source) {
     Slice->Exports.push_back({std::move(Name), Source});
   };
@@ -276,6 +316,9 @@ LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType
       addExport("_OBJC_IVAR_$_" + Sym->getName().str(), Sym);
       break;
     }
+
+    if (Sym->isWeakDefined())
+      Slice->HasWeakDefinedExports = true;
   }
   return wrap(Slice.release());
 }
@@ -302,4 +345,63 @@ char *LLVMTextAPISymbolCopyName(LLVMTextAPISymbolRef Symbol) {
 
 LLVMBool LLVMTextAPISymbolIsWeakDefined(LLVMTextAPISymbolRef Symbol) {
   return unwrap(Symbol)->Source->isWeakDefined();
+}
+
+const char *LLVMTextAPISliceGetParentFrameworkName(LLVMTextAPISliceRef Slice) {
+  const std::string &Name = unwrap(Slice)->ParentFrameworkName;
+  return Name.empty() ? nullptr : Name.c_str();
+}
+
+unsigned LLVMTextAPISliceGetPlatformCount(LLVMTextAPISliceRef Slice) {
+  return static_cast<unsigned>(unwrap(Slice)->PlatformsAndMinOS.size());
+}
+
+void LLVMTextAPISliceGetPlatform(LLVMTextAPISliceRef Slice, unsigned Index,
+                                 uint32_t *OutPlatform,
+                                 uint32_t *OutPackedMinOS) {
+  const std::vector<std::pair<uint32_t, uint32_t>> &V =
+      unwrap(Slice)->PlatformsAndMinOS;
+  if (Index >= V.size())
+    return;
+  if (OutPlatform)
+    *OutPlatform = V[Index].first;
+  if (OutPackedMinOS)
+    *OutPackedMinOS = V[Index].second;
+}
+
+unsigned LLVMTextAPISliceGetRPathCount(LLVMTextAPISliceRef Slice) {
+  return static_cast<unsigned>(unwrap(Slice)->RPaths.size());
+}
+
+const char *LLVMTextAPISliceGetRPath(LLVMTextAPISliceRef Slice, unsigned Index) {
+  const std::vector<std::string> &V = unwrap(Slice)->RPaths;
+  return Index < V.size() ? V[Index].c_str() : nullptr;
+}
+
+unsigned LLVMTextAPISliceGetReexportedLibraryCount(LLVMTextAPISliceRef Slice) {
+  return static_cast<unsigned>(unwrap(Slice)->ReexportedLibraries.size());
+}
+
+const char *LLVMTextAPISliceGetReexportedLibrary(LLVMTextAPISliceRef Slice,
+                                                 unsigned Index) {
+  const std::vector<std::string> &V = unwrap(Slice)->ReexportedLibraries;
+  return Index < V.size() ? V[Index].c_str() : nullptr;
+}
+
+unsigned LLVMTextAPISliceGetAllowableClientCount(LLVMTextAPISliceRef Slice) {
+  return static_cast<unsigned>(unwrap(Slice)->AllowableClients.size());
+}
+
+const char *LLVMTextAPISliceGetAllowableClient(LLVMTextAPISliceRef Slice,
+                                               unsigned Index) {
+  const std::vector<std::string> &V = unwrap(Slice)->AllowableClients;
+  return Index < V.size() ? V[Index].c_str() : nullptr;
+}
+
+LLVMBool LLVMTextAPISliceHasWeakDefinedExports(LLVMTextAPISliceRef Slice) {
+  return unwrap(Slice)->HasWeakDefinedExports;
+}
+
+LLVMBool LLVMTextAPISliceIsNotForDyldSharedCache(LLVMTextAPISliceRef Slice) {
+  return unwrap(Slice)->IsNotForDyldSharedCache;
 }

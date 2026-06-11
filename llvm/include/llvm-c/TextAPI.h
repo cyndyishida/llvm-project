@@ -245,6 +245,66 @@ LLVM_C_ABI char *LLVMTextAPISymbolCopyName(LLVMTextAPISymbolRef Symbol);
 LLVM_C_ABI LLVMBool LLVMTextAPISymbolIsWeakDefined(LLVMTextAPISymbolRef Symbol);
 
 /**
+ * The slice's parent/umbrella framework name, or NULL if it has none.
+ * Borrowed; valid while the slice lives.
+ */
+LLVM_C_ABI const char *
+LLVMTextAPISliceGetParentFrameworkName(LLVMTextAPISliceRef Slice);
+
+/**
+ * The number of (platform, min-deployment) entries the slice targets.
+ */
+LLVM_C_ABI unsigned LLVMTextAPISliceGetPlatformCount(LLVMTextAPISliceRef Slice);
+
+/**
+ * Read the entry at \p Index in [0, LLVMTextAPISliceGetPlatformCount): the
+ * Mach-O platform (PlatformType) into *OutPlatform and the packed
+ * min-deployment version into *OutPackedMinOS. Either out-param may be NULL.
+ * If \p Index is out of range, nothing is written.
+ */
+LLVM_C_ABI void LLVMTextAPISliceGetPlatform(LLVMTextAPISliceRef Slice,
+                                            unsigned Index,
+                                            uint32_t *OutPlatform,
+                                            uint32_t *OutPackedMinOS);
+
+/**
+ * The runtime search paths (LC_RPATH) for the slice (count + borrowed indexed
+ * accessor; the accessor returns NULL if \p Index is out of range).
+ */
+LLVM_C_ABI unsigned LLVMTextAPISliceGetRPathCount(LLVMTextAPISliceRef Slice);
+LLVM_C_ABI const char *LLVMTextAPISliceGetRPath(LLVMTextAPISliceRef Slice,
+                                                unsigned Index);
+
+/**
+ * The install names of libraries reexported by the slice.
+ */
+LLVM_C_ABI unsigned
+LLVMTextAPISliceGetReexportedLibraryCount(LLVMTextAPISliceRef Slice);
+LLVM_C_ABI const char *
+LLVMTextAPISliceGetReexportedLibrary(LLVMTextAPISliceRef Slice, unsigned Index);
+
+/**
+ * The allowable client names of the slice.
+ */
+LLVM_C_ABI unsigned
+LLVMTextAPISliceGetAllowableClientCount(LLVMTextAPISliceRef Slice);
+LLVM_C_ABI const char *
+LLVMTextAPISliceGetAllowableClient(LLVMTextAPISliceRef Slice, unsigned Index);
+
+/**
+ * Whether the slice has any weak-defined exported symbol.
+ */
+LLVM_C_ABI LLVMBool
+LLVMTextAPISliceHasWeakDefinedExports(LLVMTextAPISliceRef Slice);
+
+/**
+ * Whether the library is an OS library that is not eligible for the dyld
+ * shared cache.
+ */
+LLVM_C_ABI LLVMBool
+LLVMTextAPISliceIsNotForDyldSharedCache(LLVMTextAPISliceRef Slice);
+
+/**
  * @}
  */
 

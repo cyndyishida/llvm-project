@@ -99,6 +99,40 @@ static const char TBDv4Ld[] =
     "    symbols: [ _real, \"$ld$add$os10.5$_added\", \"$ld$previous$abc\" ]\n"
     "...\n";
 
+// A TBD v5 file with per-arch metadata (rpaths require v5). The arm64 slice
+// carries umbrella/rpath/reexport/allowable-client/weak data that x86_64 lacks,
+// plus a whole-file not_for_dyld_shared_cache flag.
+static const char TBDv5Meta[] = R"({
+"tapi_tbd_version": 5,
+"main_library": {
+  "target_info": [
+    { "target": "x86_64-macos", "min_deployment": "13.0" },
+    { "target": "arm64-macos", "min_deployment": "14.0" }
+  ],
+  "flags": [
+    { "targets": [ "x86_64-macos", "arm64-macos" ],
+      "attributes": [ "not_for_dyld_shared_cache" ] }
+  ],
+  "install_names": [ { "name": "/usr/lib/libmeta.dylib" } ],
+  "rpaths": [
+    { "targets": [ "arm64-macos" ], "paths": [ "@loader_path/A" ] }
+  ],
+  "parent_umbrellas": [
+    { "targets": [ "arm64-macos" ], "umbrella": "TheUmbrella" }
+  ],
+  "allowable_clients": [
+    { "targets": [ "arm64-macos" ], "clients": [ "ClientArm" ] }
+  ],
+  "reexported_libraries": [
+    { "targets": [ "arm64-macos" ], "names": [ "/usr/lib/libre.dylib" ] }
+  ],
+  "exported_symbols": [
+    { "targets": [ "arm64-macos" ],
+      "data": { "global": [ "_g" ], "weak": [ "_weakArm" ] } }
+  ]
+}
+})";
+
 // Write `Contents` to a fresh temp .tbd file and return its path.
 static std::string writeTempTBD(StringRef Contents) {
   SmallString<128> Path;
@@ -491,6 +525,62 @@ TEST(TextAPICSlice, FiltersLdSymbols) {
   EXPECT_EQ(sliceExportNames(Arm),
             (std::set<std::string>{"_real", "$ld$previous$abc"}));
   LLVMTextAPISliceDispose(Arm);
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// Per-arch read-path metadata matches LinkerInterfaceFile: the arm64 slice gets
+// the arm64-targeted umbrella/rpath/reexport/client/weak data; x86_64 does not.
+// The not_for_dyld_shared_cache flag is whole-file, so every slice reports it.
+TEST(TextAPICSlice, Metadata) {
+  std::string Path = writeTempTBD(TBDv5Meta);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  char *Err = nullptr;
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), &Err);
+  ASSERT_NE(File, nullptr) << (Err ? Err : "");
+
+  LLVMTextAPISliceRef Arm = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
+  ASSERT_NE(Arm, nullptr);
+
+  EXPECT_STREQ(LLVMTextAPISliceGetParentFrameworkName(Arm), "TheUmbrella");
+
+  ASSERT_EQ(LLVMTextAPISliceGetPlatformCount(Arm), 1u);
+  uint32_t Platform = 0, MinOS = 0;
+  LLVMTextAPISliceGetPlatform(Arm, 0, &Platform, &MinOS);
+  EXPECT_EQ(Platform, static_cast<uint32_t>(MachO::PLATFORM_MACOS));
+  EXPECT_EQ(MinOS, 14u << 16); // 14.0.0 packed
+
+  ASSERT_EQ(LLVMTextAPISliceGetRPathCount(Arm), 1u);
+  EXPECT_STREQ(LLVMTextAPISliceGetRPath(Arm, 0), "@loader_path/A");
+
+  ASSERT_EQ(LLVMTextAPISliceGetReexportedLibraryCount(Arm), 1u);
+  EXPECT_STREQ(LLVMTextAPISliceGetReexportedLibrary(Arm, 0),
+               "/usr/lib/libre.dylib");
+
+  ASSERT_EQ(LLVMTextAPISliceGetAllowableClientCount(Arm), 1u);
+  EXPECT_STREQ(LLVMTextAPISliceGetAllowableClient(Arm, 0), "ClientArm");
+
+  EXPECT_TRUE(LLVMTextAPISliceHasWeakDefinedExports(Arm));
+  EXPECT_TRUE(LLVMTextAPISliceIsNotForDyldSharedCache(Arm));
+  LLVMTextAPISliceDispose(Arm);
+
+  LLVMTextAPISliceRef X86 = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
+  ASSERT_NE(X86, nullptr);
+  // NOTE: the v5 reader applies parent_umbrellas to every file target (it
+  // ignores the per-umbrella "targets" key), so both slices report it. The
+  // rpath/reexport/client lists below ARE per-target, so x86_64 has none.
+  EXPECT_STREQ(LLVMTextAPISliceGetParentFrameworkName(X86), "TheUmbrella");
+  EXPECT_EQ(LLVMTextAPISliceGetRPathCount(X86), 0u);
+  EXPECT_EQ(LLVMTextAPISliceGetReexportedLibraryCount(X86), 0u);
+  EXPECT_EQ(LLVMTextAPISliceGetAllowableClientCount(X86), 0u);
+  EXPECT_FALSE(LLVMTextAPISliceHasWeakDefinedExports(X86));
+  EXPECT_TRUE(LLVMTextAPISliceIsNotForDyldSharedCache(X86));
+  LLVMTextAPISliceDispose(X86);
+
   LLVMTextAPIContextDispose(Ctx);
   sys::fs::remove(Path);
 }
