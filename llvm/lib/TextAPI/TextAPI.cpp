@@ -82,6 +82,9 @@ struct TextAPISlice {
   std::vector<std::string> InlinedFrameworkNames;
   bool HasWeakDefinedExports = false;
   bool IsNotForDyldSharedCache = false;
+  bool TwoLevelNamespace = false;
+  bool ApplicationExtensionSafe = false;
+  uint8_t SwiftABIVersion = 0;
   std::vector<TextAPIExportedSymbol> Exports;
 };
 
@@ -109,6 +112,17 @@ static PackedVersion parseVersion32(StringRef Str) {
 }
 
 unsigned LLVMTextAPIGetAPIVersion(void) { return LLVM_TEXTAPI_VERSION; }
+
+LLVMBool LLVMTextAPIIsSupported(const char *Path, const char *Data,
+                                size_t Size) {
+  MemoryBufferRef Buf(StringRef(Data, Size), Path);
+  Expected<FileType> FT = TextAPIReader::canRead(Buf);
+  if (!FT) {
+    consumeError(FT.takeError());
+    return 0;
+  }
+  return 1;
+}
 
 LLVMTextAPIContextRef LLVMTextAPIContextCreate(void) {
   return wrap(new TextAPIContext());
@@ -272,6 +286,9 @@ static TextAPISlice *buildSlice(const InterfaceFile *File, uint32_t CPUType,
 
   // Per-arch metadata, mirroring tapi::LinkerInterfaceFile::init.
   Slice->IsNotForDyldSharedCache = File->isOSLibNotForSharedCache();
+  Slice->TwoLevelNamespace = File->isTwoLevelNamespace();
+  Slice->ApplicationExtensionSafe = File->isApplicationExtensionSafe();
+  Slice->SwiftABIVersion = File->getSwiftABIVersion();
   Slice->InstallName = File->getInstallName().str();
   Slice->CurrentVersion = File->getCurrentVersion().rawValue();
   Slice->CompatibilityVersion = File->getCompatibilityVersion().rawValue();
@@ -499,6 +516,18 @@ LLVMBool LLVMTextAPISliceHasWeakDefinedExports(LLVMTextAPISliceRef Slice) {
 
 LLVMBool LLVMTextAPISliceIsNotForDyldSharedCache(LLVMTextAPISliceRef Slice) {
   return unwrap(Slice)->IsNotForDyldSharedCache;
+}
+
+LLVMBool LLVMTextAPISliceIsTwoLevelNamespace(LLVMTextAPISliceRef Slice) {
+  return unwrap(Slice)->TwoLevelNamespace;
+}
+
+LLVMBool LLVMTextAPISliceIsApplicationExtensionSafe(LLVMTextAPISliceRef Slice) {
+  return unwrap(Slice)->ApplicationExtensionSafe;
+}
+
+uint8_t LLVMTextAPISliceGetSwiftABIVersion(LLVMTextAPISliceRef Slice) {
+  return unwrap(Slice)->SwiftABIVersion;
 }
 
 unsigned LLVMTextAPISliceGetInlinedFrameworkCount(LLVMTextAPISliceRef Slice) {

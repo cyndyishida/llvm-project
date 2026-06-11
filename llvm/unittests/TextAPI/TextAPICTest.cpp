@@ -171,6 +171,16 @@ static const char TBDv4Ld2[] =
     "\"$ld$compatibility_version$os10.5$2.0\" ]\n"
     "...\n";
 
+// A TBD v4 file with explicit flags + Swift ABI for the whole-file accessors.
+static const char TBDv4Flags[] =
+    "--- !tapi-tbd\n"
+    "tbd-version: 4\n"
+    "targets:  [ x86_64-macos ]\n"
+    "flags: [ flat_namespace, not_app_extension_safe ]\n"
+    "install-name: /usr/lib/libflags.dylib\n"
+    "swift-abi-version: 5\n"
+    "...\n";
+
 // Write `Contents` to a fresh temp .tbd file and return its path.
 static std::string writeTempTBD(StringRef Contents) {
   SmallString<128> Path;
@@ -711,6 +721,34 @@ TEST(TextAPICSlice, LdDirectives) {
   EXPECT_STREQ(LLVMTextAPISliceGetInstallName(S2), "/usr/lib/libld2.dylib");
   EXPECT_EQ(LLVMTextAPISliceGetCompatibilityVersion(S2), 1u << 16);
   LLVMTextAPISliceDispose(S2);
+
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// LLVMTextAPIIsSupported recognizes a .tbd byte buffer and rejects other data.
+TEST(TextAPICDetect, IsSupported) {
+  EXPECT_TRUE(LLVMTextAPIIsSupported("x.tbd", TBDv4MultiArch,
+                                     sizeof(TBDv4MultiArch) - 1));
+  static const char NotTBD[] = "this is not a tbd file\n";
+  EXPECT_FALSE(LLVMTextAPIIsSupported("x.tbd", NotTBD, sizeof(NotTBD) - 1));
+}
+
+// The whole-file flag/version accessors on a slice.
+TEST(TextAPICSlice, WholeFileFlags) {
+  std::string Path = writeTempTBD(TBDv4Flags);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), nullptr);
+  ASSERT_NE(File, nullptr);
+
+  LLVMTextAPISliceRef S = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_X86_64, MachO::CPU_SUBTYPE_X86_64_ALL,
+      LLVMTextAPIParsingFlagsNone, /*minOS=*/0, nullptr);
+  ASSERT_NE(S, nullptr);
+  EXPECT_FALSE(LLVMTextAPISliceIsTwoLevelNamespace(S));        // flat_namespace
+  EXPECT_FALSE(LLVMTextAPISliceIsApplicationExtensionSafe(S)); // not_app_ext_safe
+  EXPECT_EQ(LLVMTextAPISliceGetSwiftABIVersion(S), 5);
+  LLVMTextAPISliceDispose(S);
 
   LLVMTextAPIContextDispose(Ctx);
   sys::fs::remove(Path);

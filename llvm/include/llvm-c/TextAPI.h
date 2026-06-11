@@ -78,6 +78,15 @@ LLVM_C_EXTERN_C_BEGIN
 LLVM_C_ABI unsigned LLVMTextAPIGetAPIVersion(void);
 
 /**
+ * Whether the bytes in [\p Data, \p Data + \p Size) (named \p Path for
+ * diagnostics) are a text-based API (.tbd) file the reader recognizes. This
+ * lets a client cheaply detect .tbd inputs from a memory mapping before
+ * deciding to parse them.
+ */
+LLVM_C_ABI LLVMBool LLVMTextAPIIsSupported(const char *Path, const char *Data,
+                                           size_t Size);
+
+/**
  * A context owns a cache of parsed .tbd files.
  *
  * Files parsed through a context (see LLVMTextAPIParse) are owned by it and
@@ -330,6 +339,23 @@ LLVMTextAPISliceHasWeakDefinedExports(LLVMTextAPISliceRef Slice);
  */
 LLVM_C_ABI LLVMBool
 LLVMTextAPISliceIsNotForDyldSharedCache(LLVMTextAPISliceRef Slice);
+
+/**
+ * Whether the library uses two-level namespacing.
+ */
+LLVM_C_ABI LLVMBool
+LLVMTextAPISliceIsTwoLevelNamespace(LLVMTextAPISliceRef Slice);
+
+/**
+ * Whether the library is safe to link into an application extension.
+ */
+LLVM_C_ABI LLVMBool
+LLVMTextAPISliceIsApplicationExtensionSafe(LLVMTextAPISliceRef Slice);
+
+/**
+ * The library's Swift ABI version (0 if it exports no Swift).
+ */
+LLVM_C_ABI uint8_t LLVMTextAPISliceGetSwiftABIVersion(LLVMTextAPISliceRef Slice);
 
 /**
  * The install names of the frameworks inlined into the file (count + borrowed
