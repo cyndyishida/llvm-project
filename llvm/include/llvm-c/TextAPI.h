@@ -305,6 +305,30 @@ LLVM_C_ABI LLVMBool
 LLVMTextAPISliceIsNotForDyldSharedCache(LLVMTextAPISliceRef Slice);
 
 /**
+ * The install names of the frameworks inlined into the file (count + borrowed
+ * indexed accessor). This list is not architecture-filtered; the accessor
+ * returns NULL if \p Index is out of range.
+ */
+LLVM_C_ABI unsigned
+LLVMTextAPISliceGetInlinedFrameworkCount(LLVMTextAPISliceRef Slice);
+LLVM_C_ABI const char *
+LLVMTextAPISliceGetInlinedFrameworkName(LLVMTextAPISliceRef Slice,
+                                        unsigned Index);
+
+/**
+ * Resolve the inlined framework whose install name is \p InstallName into its
+ * own slice for the given architecture (selected as in LLVMTextAPIGetSlice).
+ *
+ * Returns a new slice the caller releases with LLVMTextAPISliceDispose, or NULL
+ * and, if \p OutError is non-NULL, a malloc'd diagnostic in *OutError (released
+ * with LLVMDisposeMessage) when there is no such framework or no compatible
+ * architecture.
+ */
+LLVM_C_ABI LLVMTextAPISliceRef LLVMTextAPISliceGetInlinedFramework(
+    LLVMTextAPISliceRef Slice, const char *InstallName, uint32_t CPUType,
+    uint32_t CPUSubType, uint32_t Flags, char **OutError);
+
+/**
  * @}
  */
 

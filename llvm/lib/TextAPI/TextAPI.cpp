@@ -69,11 +69,13 @@ struct TextAPIExportedSymbol {
 /// selected architecture (mirroring tapi::LinkerInterfaceFile). The exported
 /// symbols' source Symbols remain owned by the file (and its context).
 struct TextAPISlice {
-  std::string ParentFrameworkName; // empty if none
+  const InterfaceFile *File = nullptr; // source file (for inlined resolution)
+  std::string ParentFrameworkName;     // empty if none
   std::vector<std::pair<uint32_t, uint32_t>> PlatformsAndMinOS; // (platform, ver)
   std::vector<std::string> RPaths;
   std::vector<std::string> ReexportedLibraries;
   std::vector<std::string> AllowableClients;
+  std::vector<std::string> InlinedFrameworkNames;
   bool HasWeakDefinedExports = false;
   bool IsNotForDyldSharedCache = false;
   std::vector<TextAPIExportedSymbol> Exports;
@@ -210,13 +212,15 @@ static Architecture getABICompatibleSlice(ArchitectureSet Archs,
   return AK_unknown;
 }
 
-LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType,
-                                        uint32_t CPUSubType, uint32_t Flags,
-                                        char **OutError) {
+// Build a slice for one architecture of \p File, mirroring
+// tapi::LinkerInterfaceFile::init. Returns a heap slice the caller owns, or
+// nullptr with *OutError set.
+static TextAPISlice *buildSlice(const InterfaceFile *File, uint32_t CPUType,
+                                uint32_t CPUSubType, uint32_t Flags,
+                                char **OutError) {
   if (OutError)
     *OutError = nullptr;
 
-  InterfaceFile *File = unwrap(FileRef);
   ArchitectureSet Archs = File->getArchitectures();
   Architecture Exact = getArchitectureFromCpuType(CPUType, CPUSubType);
 
@@ -320,7 +324,21 @@ LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType
     if (Sym->isWeakDefined())
       Slice->HasWeakDefinedExports = true;
   }
-  return wrap(Slice.release());
+
+  // Inlined frameworks: all documents, not arch-filtered. Keep the source file
+  // so LLVMTextAPISliceGetInlinedFramework can resolve a sub-document later.
+  Slice->File = File;
+  for (const std::shared_ptr<InterfaceFile> &Doc : File->documents())
+    Slice->InlinedFrameworkNames.push_back(Doc->getInstallName().str());
+
+  return Slice.release();
+}
+
+LLVMTextAPISliceRef LLVMTextAPIGetSlice(LLVMTextAPIRef FileRef, uint32_t CPUType,
+                                        uint32_t CPUSubType, uint32_t Flags,
+                                        char **OutError) {
+  return wrap(
+      buildSlice(unwrap(FileRef), CPUType, CPUSubType, Flags, OutError));
 }
 
 void LLVMTextAPISliceDispose(LLVMTextAPISliceRef Slice) {
@@ -404,4 +422,30 @@ LLVMBool LLVMTextAPISliceHasWeakDefinedExports(LLVMTextAPISliceRef Slice) {
 
 LLVMBool LLVMTextAPISliceIsNotForDyldSharedCache(LLVMTextAPISliceRef Slice) {
   return unwrap(Slice)->IsNotForDyldSharedCache;
+}
+
+unsigned LLVMTextAPISliceGetInlinedFrameworkCount(LLVMTextAPISliceRef Slice) {
+  return static_cast<unsigned>(unwrap(Slice)->InlinedFrameworkNames.size());
+}
+
+const char *LLVMTextAPISliceGetInlinedFrameworkName(LLVMTextAPISliceRef Slice,
+                                                    unsigned Index) {
+  const std::vector<std::string> &V = unwrap(Slice)->InlinedFrameworkNames;
+  return Index < V.size() ? V[Index].c_str() : nullptr;
+}
+
+LLVMTextAPISliceRef LLVMTextAPISliceGetInlinedFramework(
+    LLVMTextAPISliceRef Slice, const char *InstallName, uint32_t CPUType,
+    uint32_t CPUSubType, uint32_t Flags, char **OutError) {
+  if (OutError)
+    *OutError = nullptr;
+
+  const InterfaceFile *File = unwrap(Slice)->File;
+  for (const std::shared_ptr<InterfaceFile> &Doc : File->documents())
+    if (Doc->getInstallName() == InstallName)
+      return wrap(buildSlice(Doc.get(), CPUType, CPUSubType, Flags, OutError));
+
+  if (OutError)
+    *OutError = copyCString("no such inlined framework");
+  return nullptr;
 }

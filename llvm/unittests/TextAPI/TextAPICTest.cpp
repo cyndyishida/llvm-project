@@ -133,6 +133,27 @@ static const char TBDv5Meta[] = R"({
 }
 })";
 
+// A TBD v5 file with one inlined library (the "libraries" array).
+static const char TBDv5Inlined[] = R"({
+"tapi_tbd_version": 5,
+"main_library": {
+  "target_info": [ { "target": "arm64-macos", "min_deployment": "14.0" } ],
+  "install_names": [ { "name": "/usr/lib/libroot.dylib" } ],
+  "exported_symbols": [
+    { "targets": [ "arm64-macos" ], "data": { "global": [ "_root" ] } }
+  ]
+},
+"libraries": [
+  {
+    "target_info": [ { "target": "arm64-macos", "min_deployment": "14.0" } ],
+    "install_names": [ { "name": "/usr/lib/libinlined.dylib" } ],
+    "exported_symbols": [
+      { "targets": [ "arm64-macos" ], "data": { "global": [ "_inlinedSym" ] } }
+    ]
+  }
+]
+})";
+
 // Write `Contents` to a fresh temp .tbd file and return its path.
 static std::string writeTempTBD(StringRef Contents) {
   SmallString<128> Path;
@@ -581,6 +602,48 @@ TEST(TextAPICSlice, Metadata) {
   EXPECT_TRUE(LLVMTextAPISliceIsNotForDyldSharedCache(X86));
   LLVMTextAPISliceDispose(X86);
 
+  LLVMTextAPIContextDispose(Ctx);
+  sys::fs::remove(Path);
+}
+
+// Inlined frameworks are enumerated by name and each resolves to its own slice
+// (re-running slice selection on the sub-document), matching
+// LinkerInterfaceFile::inlinedFrameworkNames/getInlinedFramework.
+TEST(TextAPICSlice, InlinedFrameworks) {
+  std::string Path = writeTempTBD(TBDv5Inlined);
+  LLVMTextAPIContextRef Ctx = LLVMTextAPIContextCreate();
+  char *Err = nullptr;
+  LLVMTextAPIRef File = LLVMTextAPIParse(Ctx, Path.c_str(), &Err);
+  ASSERT_NE(File, nullptr) << (Err ? Err : "");
+
+  LLVMTextAPISliceRef Root = LLVMTextAPIGetSlice(
+      File, MachO::CPU_TYPE_ARM64, MachO::CPU_SUBTYPE_ARM64_ALL,
+      LLVMTextAPIParsingFlagsNone, nullptr);
+  ASSERT_NE(Root, nullptr);
+
+  ASSERT_EQ(LLVMTextAPISliceGetInlinedFrameworkCount(Root), 1u);
+  EXPECT_STREQ(LLVMTextAPISliceGetInlinedFrameworkName(Root, 0),
+               "/usr/lib/libinlined.dylib");
+
+  // Resolve the inlined framework and read its own exports.
+  char *Err2 = nullptr;
+  LLVMTextAPISliceRef Inlined = LLVMTextAPISliceGetInlinedFramework(
+      Root, "/usr/lib/libinlined.dylib", MachO::CPU_TYPE_ARM64,
+      MachO::CPU_SUBTYPE_ARM64_ALL, LLVMTextAPIParsingFlagsNone, &Err2);
+  ASSERT_NE(Inlined, nullptr) << (Err2 ? Err2 : "");
+  EXPECT_EQ(sliceExportNames(Inlined), (std::set<std::string>{"_inlinedSym"}));
+  LLVMTextAPISliceDispose(Inlined);
+
+  // An unknown install name is an error.
+  char *Err3 = nullptr;
+  LLVMTextAPISliceRef Missing = LLVMTextAPISliceGetInlinedFramework(
+      Root, "/usr/lib/libnope.dylib", MachO::CPU_TYPE_ARM64,
+      MachO::CPU_SUBTYPE_ARM64_ALL, LLVMTextAPIParsingFlagsNone, &Err3);
+  EXPECT_EQ(Missing, nullptr);
+  ASSERT_NE(Err3, nullptr);
+  LLVMDisposeMessage(Err3);
+
+  LLVMTextAPISliceDispose(Root);
   LLVMTextAPIContextDispose(Ctx);
   sys::fs::remove(Path);
 }
