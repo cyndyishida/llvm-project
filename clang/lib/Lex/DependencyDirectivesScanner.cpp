@@ -17,6 +17,7 @@
 #include "clang/Lex/DependencyDirectivesScanner.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/IdentifierTable.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Lex/Pragma.h"
@@ -71,9 +72,11 @@ static CXX20ModuleDirectiveKind scanFirstCXX20ModuleDirective(StringRef Source);
 struct Scanner {
   Scanner(StringRef Input,
           SmallVectorImpl<dependency_directives_scan::Token> &Tokens,
-          DiagnosticsEngine *Diags, SourceLocation InputSourceLoc)
+          DiagnosticsEngine *Diags, SourceLocation InputSourceLoc,
+          StringSet<> *Macros = nullptr)
       : Input(Input), Tokens(Tokens), Diags(Diags),
-        InputSourceLoc(InputSourceLoc), LangOpts(getLangOptsForDepScanning()),
+        InputSourceLoc(InputSourceLoc), Macros(Macros),
+        LangOpts(getLangOptsForDepScanning()),
         TheLexer(InputSourceLoc, LangOpts, Input.begin(), Input.begin(),
                  Input.end()) {}
 
@@ -165,10 +168,33 @@ private:
                                             const char *const End);
   void lexPPDirectiveBody(const char *&First, const char *const End);
 
+  DirectiveKind getDirectiveKind(StringRef Id) const {
+    return llvm::StringSwitch<DirectiveKind>(Id)
+        .Case("include", pp_include)
+        .Case("__include_macros", pp___include_macros)
+        .Case("define", pp_define)
+        .Case("undef", pp_undef)
+        .Case("import", pp_import)
+        .Case("include_next", pp_include_next)
+        .Case("if", pp_if)
+        .Case("ifdef", pp_ifdef)
+        .Case("ifndef", pp_ifndef)
+        .Case("elif", pp_elif)
+        .Case("elifdef", pp_elifdef)
+        .Case("elifndef", pp_elifndef)
+        .Case("else", pp_else)
+        .Case("endif", pp_endif)
+        .Default(pp_none);
+  }
+
   DirectiveWithTokens &pushDirective(DirectiveKind Kind) {
     Tokens.append(CurDirToks);
     DirsWithToks.emplace_back(Kind, CurDirToks.size());
     CurDirToks.clear();
+    if (Macros)
+      for (StringRef M : CurMacros)
+        Macros->insert(M);
+    CurMacros.clear();
     return DirsWithToks.back();
   }
   void popDirective() {
@@ -192,12 +218,17 @@ private:
   SmallVectorImpl<dependency_directives_scan::Token> &Tokens;
   DiagnosticsEngine *Diags;
   SourceLocation InputSourceLoc;
+  StringSet<> *Macros;
 
   const char *LastTokenPtr = nullptr;
   /// Keeps track of the tokens for the currently lexed directive. Once a
   /// directive is fully lexed and "committed" then the tokens get appended to
   /// \p Tokens and \p CurDirToks is cleared for the next directive.
   SmallVector<dependency_directives_scan::Token, 32> CurDirToks;
+  /// Speculative configuration macros referenced by the currently lexed
+  /// directive. Flushed into \p Macros (if collecting) when the directive is
+  /// committed.
+  SmallVector<StringRef, 16> CurMacros;
   /// The directives that were lexed along with the number of tokens that each
   /// directive contains. The tokens of all the directives are kept in \p Tokens
   /// vector, in the same order as the directives order in \p DirsWithToks.
@@ -600,6 +631,23 @@ bool Scanner::lexModuleDirectiveBody(DirectiveKind Kind, const char *&First,
                      diag::err_dep_source_scanner_unexpected_tokens_at_import);
 }
 
+/// The identifier spellings that are language keywords under the
+/// dependency-scanning language options. Keywords cannot be user configuration
+/// macros, so they are not recorded. Built once and shared read-only, which is
+/// safe for concurrent scans.
+static const StringSet<> &getKeywordSpellings() {
+  static const StringSet<> Keywords = [] {
+    LangOptions LangOpts = Scanner::getLangOptsForDepScanning();
+    StringSet<> Spellings;
+#define KEYWORD(NAME, FLAGS)                                                   \
+  if (getKeywordStatus(LangOpts, FLAGS) != KS_Disabled)                        \
+    Spellings.insert(#NAME);
+#include "clang/Basic/TokenKinds.def"
+    return Spellings;
+  }();
+  return Keywords;
+}
+
 dependency_directives_scan::Token &Scanner::lexToken(const char *&First,
                                                      const char *const End) {
   clang::Token Tok;
@@ -610,6 +658,16 @@ dependency_directives_scan::Token &Scanner::lexToken(const char *&First,
   unsigned Offset = TheLexer.getCurrentBufferOffset() - Tok.getLength();
   CurDirToks.emplace_back(Offset, Tok.getLength(), Tok.getKind(),
                           Tok.getFlags());
+
+  // When collecting config macros, record raw identifiers that are neither
+  // preprocessor directive names nor language keywords.
+  if (Macros && Tok.getKind() == clang::tok::raw_identifier) {
+    StringRef PossibleMacro = Input.slice(Offset, Offset + Tok.getLength());
+    if (getDirectiveKind(PossibleMacro) == pp_none &&
+        !getKeywordSpellings().contains(PossibleMacro))
+      CurMacros.push_back(PossibleMacro);
+  }
+
   return CurDirToks.back();
 }
 
@@ -957,6 +1015,7 @@ bool Scanner::lexPPLine(const char *&First, const char *const End) {
     /// Clear Scanner's CurDirToks before returning, in case we didn't push a
     /// new directive.
     CurDirToks.clear();
+    CurMacros.clear();
   });
 
   bool IsPreprocessedModule =
@@ -1002,22 +1061,7 @@ bool Scanner::lexPPLine(const char *&First, const char *const End) {
   if (Id == "pragma")
     return lexPragma(First, End);
 
-  auto Kind = llvm::StringSwitch<DirectiveKind>(Id)
-                  .Case("include", pp_include)
-                  .Case("__include_macros", pp___include_macros)
-                  .Case("define", pp_define)
-                  .Case("undef", pp_undef)
-                  .Case("import", pp_import)
-                  .Case("include_next", pp_include_next)
-                  .Case("if", pp_if)
-                  .Case("ifdef", pp_ifdef)
-                  .Case("ifndef", pp_ifndef)
-                  .Case("elif", pp_elif)
-                  .Case("elifdef", pp_elifdef)
-                  .Case("elifndef", pp_elifndef)
-                  .Case("else", pp_else)
-                  .Case("endif", pp_endif)
-                  .Default(pp_none);
+  auto Kind = getDirectiveKind(Id);
   if (Kind == pp_none) {
     skipDirective(Id, First, End);
     return false;
@@ -1085,8 +1129,8 @@ bool Scanner::scan(SmallVectorImpl<Directive> &Directives) {
 bool clang::scanSourceForDependencyDirectives(
     StringRef Input, SmallVectorImpl<dependency_directives_scan::Token> &Tokens,
     SmallVectorImpl<Directive> &Directives, DiagnosticsEngine *Diags,
-    SourceLocation InputSourceLoc) {
-  return Scanner(Input, Tokens, Diags, InputSourceLoc).scan(Directives);
+    SourceLocation InputSourceLoc, llvm::StringSet<> *Macros) {
+  return Scanner(Input, Tokens, Diags, InputSourceLoc, Macros).scan(Directives);
 }
 
 void clang::printDependencyDirectivesAsSource(

@@ -65,6 +65,53 @@ TEST(MinimizeSourceToDependencyDirectivesTest, Empty) {
   EXPECT_EQ(pp_eof, Directives[1].Kind);
 }
 
+TEST(MinimizeSourceToDependencyDirectivesTest, CaptureConfigMacros) {
+  SmallVector<dependency_directives_scan::Token, 16> Tokens;
+  SmallVector<Directive, 16> Directives;
+  llvm::StringSet<> Macros;
+
+  StringRef Source = "#if defined(FOO) && BAR\n"
+                     "#include <a.h>\n"
+                     "#endif\n"
+                     "#ifdef BAZ\n"
+                     "#endif\n";
+  ASSERT_FALSE(scanSourceForDependencyDirectives(
+      Source, Tokens, Directives, /*Diags=*/nullptr,
+      /*InputSourceLoc=*/SourceLocation(), &Macros));
+
+  // Identifiers referenced by directives are captured.
+  EXPECT_TRUE(Macros.contains("FOO"));
+  EXPECT_TRUE(Macros.contains("BAR"));
+  EXPECT_TRUE(Macros.contains("BAZ"));
+}
+
+TEST(MinimizeSourceToDependencyDirectivesTest, SkipConfigMacroCapture) {
+  // Verify default case collects no speculative macros.
+  SmallVector<dependency_directives_scan::Token, 16> Tokens;
+  SmallVector<Directive, 16> Directives;
+  ASSERT_FALSE(scanSourceForDependencyDirectives("#ifdef FOO\n#endif\n", Tokens,
+                                                 Directives));
+}
+
+TEST(MinimizeSourceToDependencyDirectivesTest,
+     CaptureConfigMacrosSkipsKeywords) {
+  SmallVector<dependency_directives_scan::Token, 16> Tokens;
+  SmallVector<Directive, 16> Directives;
+  llvm::StringSet<> Macros;
+
+  // Language keywords can't reasonably be user configuration macros, so they
+  // are skipped, while a genuine user macro on the same line is kept.
+  StringRef Source = "#if sizeof(int) > MY_FEATURE\n"
+                     "#endif\n";
+  ASSERT_FALSE(scanSourceForDependencyDirectives(
+      Source, Tokens, Directives, /*Diags=*/nullptr,
+      /*InputSourceLoc=*/SourceLocation(), &Macros));
+
+  EXPECT_TRUE(Macros.contains("MY_FEATURE"));
+  EXPECT_FALSE(Macros.contains("sizeof"));
+  EXPECT_FALSE(Macros.contains("int"));
+}
+
 TEST(MinimizeSourceToDependencyDirectivesTest, AllTokens) {
   SmallVector<char, 128> Out;
   SmallVector<dependency_directives_scan::Token, 4> Tokens;

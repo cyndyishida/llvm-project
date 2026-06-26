@@ -19,6 +19,7 @@
 
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringSet.h"
 
 namespace clang {
 class FileManager;
@@ -114,11 +115,15 @@ struct Directive {
 /// \returns false on success, true on error. If the diagnostic engine is not
 /// null, an appropriate error is reported using the given input location
 /// with the offset that corresponds to the \p Input buffer offset.
+///
+/// \param Macros If non-null, is populated with the names of identifiers that
+/// appear in preprocessor directives and might be configuration macros.
 bool scanSourceForDependencyDirectives(
     StringRef Input, SmallVectorImpl<dependency_directives_scan::Token> &Tokens,
     SmallVectorImpl<dependency_directives_scan::Directive> &Directives,
     DiagnosticsEngine *Diags = nullptr,
-    SourceLocation InputSourceLoc = SourceLocation());
+    SourceLocation InputSourceLoc = SourceLocation(),
+    llvm::StringSet<> *Macros = nullptr);
 
 /// Print the previously scanned dependency directives as minimized source text.
 ///
