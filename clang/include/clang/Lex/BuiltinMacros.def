@@ -1,0 +1,92 @@
+//===--- BuiltinMacros.def - Preprocessor builtin macros --------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file specifies the macros the preprocessor defines by itself, such as
+// __LINE__ and __has_include.
+//
+// BUILTIN_MACRO(Member, Spelling, Predicate) describes a macro registered by
+// Preprocessor::RegisterBuiltinMacros(). `Member` is the Preprocessor field
+// holding its IdentifierInfo, which is null when `Predicate` is false. The
+// predicate expects `const LangOptions &LangOpts` and
+// `const PreprocessorOptions &PPOpts` to be available.
+//
+// BUILTIN_MACRO_UNREGISTERED(Member, Spelling) describes an identifier that is
+// special to the preprocessor but is not a registered builtin macro, so it is
+// set up elsewhere. It is listed here so that clients needing the complete set
+// of preprocessor-owned spellings can find it.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef BUILTIN_MACRO
+#define BUILTIN_MACRO(Member, Spelling, Predicate)
+#endif
+
+#ifndef BUILTIN_MACRO_UNREGISTERED
+#define BUILTIN_MACRO_UNREGISTERED(Member, Spelling)
+#endif
+
+BUILTIN_MACRO(Ident__LINE__, "__LINE__", true)
+BUILTIN_MACRO(Ident__FILE__, "__FILE__", true)
+
+// Keep __DATE__, __TIME__ and __TIMESTAMP__ undefined if it was requested.
+// Those macros still be able defined from the command line.
+BUILTIN_MACRO(Ident__DATE__, "__DATE__",
+              PPOpts.InitDateTimeMacros != DateTimeInitKind::Undefined)
+BUILTIN_MACRO(Ident__TIME__, "__TIME__",
+              PPOpts.InitDateTimeMacros != DateTimeInitKind::Undefined)
+
+BUILTIN_MACRO(Ident__COUNTER__, "__COUNTER__", true)
+BUILTIN_MACRO(Ident_Pragma, "_Pragma", true)
+BUILTIN_MACRO(Ident__FLT_EVAL_METHOD__, "__FLT_EVAL_METHOD__", true)
+
+// C++ Standing Document Extensions.
+BUILTIN_MACRO(Ident__has_cpp_attribute, "__has_cpp_attribute",
+              LangOpts.CPlusPlus)
+
+// GCC Extensions.
+BUILTIN_MACRO(Ident__BASE_FILE__, "__BASE_FILE__", true)
+BUILTIN_MACRO(Ident__INCLUDE_LEVEL__, "__INCLUDE_LEVEL__", true)
+BUILTIN_MACRO(Ident__TIMESTAMP__, "__TIMESTAMP__",
+              PPOpts.InitDateTimeMacros != DateTimeInitKind::Undefined)
+
+// Microsoft Extensions.
+BUILTIN_MACRO(Ident__identifier, "__identifier", LangOpts.MicrosoftExt)
+BUILTIN_MACRO(Ident__pragma, "__pragma", LangOpts.MicrosoftExt)
+
+// Clang Extensions.
+BUILTIN_MACRO(Ident__FILE_NAME__, "__FILE_NAME__", true)
+BUILTIN_MACRO(Ident__has_feature, "__has_feature", true)
+BUILTIN_MACRO(Ident__has_extension, "__has_extension", true)
+BUILTIN_MACRO(Ident__has_builtin, "__has_builtin", true)
+BUILTIN_MACRO(Ident__has_constexpr_builtin, "__has_constexpr_builtin", true)
+BUILTIN_MACRO(Ident__has_attribute, "__has_attribute", true)
+BUILTIN_MACRO(Ident__has_c_attribute, "__has_c_attribute", !LangOpts.CPlusPlus)
+BUILTIN_MACRO(Ident__has_declspec, "__has_declspec_attribute", true)
+BUILTIN_MACRO(Ident__has_embed, "__has_embed", true)
+BUILTIN_MACRO(Ident__has_include, "__has_include", true)
+BUILTIN_MACRO(Ident__has_include_next, "__has_include_next", true)
+BUILTIN_MACRO(Ident__has_warning, "__has_warning", true)
+BUILTIN_MACRO(Ident__is_identifier, "__is_identifier", true)
+BUILTIN_MACRO(Ident__is_target_arch, "__is_target_arch", true)
+BUILTIN_MACRO(Ident__is_target_vendor, "__is_target_vendor", true)
+BUILTIN_MACRO(Ident__is_target_os, "__is_target_os", true)
+BUILTIN_MACRO(Ident__is_target_environment, "__is_target_environment", true)
+BUILTIN_MACRO(Ident__is_target_variant_os, "__is_target_variant_os", true)
+BUILTIN_MACRO(Ident__is_target_variant_environment,
+              "__is_target_variant_environment", true)
+
+// Modules.
+BUILTIN_MACRO(Ident__building_module, "__building_module", true)
+BUILTIN_MACRO(Ident__MODULE__, "__MODULE__", !LangOpts.CurrentModule.empty())
+
+// These are poisoned rather than registered, in Preprocessor::Initialize().
+BUILTIN_MACRO_UNREGISTERED(Ident__VA_ARGS__, "__VA_ARGS__")
+BUILTIN_MACRO_UNREGISTERED(Ident__VA_OPT__, "__VA_OPT__")
+
+#undef BUILTIN_MACRO_UNREGISTERED
+#undef BUILTIN_MACRO

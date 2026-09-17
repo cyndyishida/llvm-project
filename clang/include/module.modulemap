@@ -136,6 +136,7 @@ module Clang_Lex {
   requires cplusplus
   umbrella "clang/Lex"
 
+  textual header "clang/Lex/BuiltinMacros.def"
   textual header "clang/Lex/HLSLRootSignatureTokenKinds.def"
 
   module * { export * }

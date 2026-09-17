@@ -209,39 +209,11 @@ class Preprocessor {
   llvm::BumpPtrAllocator BP;
 
   /// Identifiers for builtin macros and other builtins.
-  IdentifierInfo *Ident__LINE__, *Ident__FILE__;   // __LINE__, __FILE__
-  IdentifierInfo *Ident__DATE__, *Ident__TIME__;   // __DATE__, __TIME__
-  IdentifierInfo *Ident__INCLUDE_LEVEL__;          // __INCLUDE_LEVEL__
-  IdentifierInfo *Ident__BASE_FILE__;              // __BASE_FILE__
-  IdentifierInfo *Ident__FILE_NAME__;              // __FILE_NAME__
-  IdentifierInfo *Ident__TIMESTAMP__;              // __TIMESTAMP__
-  IdentifierInfo *Ident__COUNTER__;                // __COUNTER__
-  IdentifierInfo *Ident_Pragma, *Ident__pragma;    // _Pragma, __pragma
-  IdentifierInfo *Ident__identifier;               // __identifier
-  IdentifierInfo *Ident__VA_ARGS__;                // __VA_ARGS__
-  IdentifierInfo *Ident__VA_OPT__;                 // __VA_OPT__
-  IdentifierInfo *Ident__has_feature;              // __has_feature
-  IdentifierInfo *Ident__has_extension;            // __has_extension
-  IdentifierInfo *Ident__has_builtin;              // __has_builtin
-  IdentifierInfo *Ident__has_constexpr_builtin;    // __has_constexpr_builtin
-  IdentifierInfo *Ident__has_attribute;            // __has_attribute
-  IdentifierInfo *Ident__has_embed;                // __has_embed
-  IdentifierInfo *Ident__has_include;              // __has_include
-  IdentifierInfo *Ident__has_include_next;         // __has_include_next
-  IdentifierInfo *Ident__has_warning;              // __has_warning
-  IdentifierInfo *Ident__is_identifier;            // __is_identifier
-  IdentifierInfo *Ident__building_module;          // __building_module
-  IdentifierInfo *Ident__MODULE__;                 // __MODULE__
-  IdentifierInfo *Ident__has_cpp_attribute;        // __has_cpp_attribute
-  IdentifierInfo *Ident__has_c_attribute;          // __has_c_attribute
-  IdentifierInfo *Ident__has_declspec;             // __has_declspec_attribute
-  IdentifierInfo *Ident__is_target_arch;           // __is_target_arch
-  IdentifierInfo *Ident__is_target_vendor;         // __is_target_vendor
-  IdentifierInfo *Ident__is_target_os;             // __is_target_os
-  IdentifierInfo *Ident__is_target_environment;    // __is_target_environment
-  IdentifierInfo *Ident__is_target_variant_os;
-  IdentifierInfo *Ident__is_target_variant_environment;
-  IdentifierInfo *Ident__FLT_EVAL_METHOD__;        // __FLT_EVAL_METHOD
+#define BUILTIN_MACRO(Member, Spelling, Predicate)                             \
+  IdentifierInfo *Member = nullptr;
+#define BUILTIN_MACRO_UNREGISTERED(Member, Spelling)                           \
+  IdentifierInfo *Member = nullptr;
+#include "clang/Lex/BuiltinMacros.def"
 
   // Weak, only valid (and set) while InMacroArgs is true.
   Token* ArgMacro;

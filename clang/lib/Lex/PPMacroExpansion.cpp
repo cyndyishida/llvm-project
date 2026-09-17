@@ -316,78 +316,11 @@ void Preprocessor::dumpMacroInfo(const IdentifierInfo *II) {
 /// RegisterBuiltinMacros - Register builtin macros, such as __LINE__ with the
 /// identifier table.
 void Preprocessor::RegisterBuiltinMacros() {
-  Ident__LINE__ = RegisterBuiltinMacro("__LINE__");
-  Ident__FILE__ = RegisterBuiltinMacro("__FILE__");
-  // Keep __DATE__, __TIME__ and __TIMESTAMP__ undefined if it was requested.
-  // Those macros still be able defined from the command line.
-  if (getPreprocessorOpts().InitDateTimeMacros != DateTimeInitKind::Undefined) {
-    Ident__DATE__ = RegisterBuiltinMacro("__DATE__");
-    Ident__TIME__ = RegisterBuiltinMacro("__TIME__");
-  } else {
-    Ident__DATE__ = nullptr;
-    Ident__TIME__ = nullptr;
-  }
-  Ident__COUNTER__ = RegisterBuiltinMacro("__COUNTER__");
-  Ident_Pragma = RegisterBuiltinMacro("_Pragma");
-  Ident__FLT_EVAL_METHOD__ = RegisterBuiltinMacro("__FLT_EVAL_METHOD__");
-
-  // C++ Standing Document Extensions.
-  if (getLangOpts().CPlusPlus)
-    Ident__has_cpp_attribute = RegisterBuiltinMacro("__has_cpp_attribute");
-  else
-    Ident__has_cpp_attribute = nullptr;
-
-  // GCC Extensions.
-  Ident__BASE_FILE__ = RegisterBuiltinMacro("__BASE_FILE__");
-  Ident__INCLUDE_LEVEL__ = RegisterBuiltinMacro("__INCLUDE_LEVEL__");
-  if (getPreprocessorOpts().InitDateTimeMacros != DateTimeInitKind::Undefined)
-    Ident__TIMESTAMP__ = RegisterBuiltinMacro("__TIMESTAMP__");
-  else
-    Ident__TIMESTAMP__ = nullptr;
-
-  // Microsoft Extensions.
-  if (getLangOpts().MicrosoftExt) {
-    Ident__identifier = RegisterBuiltinMacro("__identifier");
-    Ident__pragma = RegisterBuiltinMacro("__pragma");
-  } else {
-    Ident__identifier = nullptr;
-    Ident__pragma = nullptr;
-  }
-
-  // Clang Extensions.
-  Ident__FILE_NAME__ = RegisterBuiltinMacro("__FILE_NAME__");
-  Ident__has_feature = RegisterBuiltinMacro("__has_feature");
-  Ident__has_extension = RegisterBuiltinMacro("__has_extension");
-  Ident__has_builtin = RegisterBuiltinMacro("__has_builtin");
-  Ident__has_constexpr_builtin =
-      RegisterBuiltinMacro("__has_constexpr_builtin");
-  Ident__has_attribute = RegisterBuiltinMacro("__has_attribute");
-  if (!getLangOpts().CPlusPlus)
-    Ident__has_c_attribute = RegisterBuiltinMacro("__has_c_attribute");
-  else
-    Ident__has_c_attribute = nullptr;
-
-  Ident__has_declspec = RegisterBuiltinMacro("__has_declspec_attribute");
-  Ident__has_embed = RegisterBuiltinMacro("__has_embed");
-  Ident__has_include = RegisterBuiltinMacro("__has_include");
-  Ident__has_include_next = RegisterBuiltinMacro("__has_include_next");
-  Ident__has_warning = RegisterBuiltinMacro("__has_warning");
-  Ident__is_identifier = RegisterBuiltinMacro("__is_identifier");
-  Ident__is_target_arch = RegisterBuiltinMacro("__is_target_arch");
-  Ident__is_target_vendor = RegisterBuiltinMacro("__is_target_vendor");
-  Ident__is_target_os = RegisterBuiltinMacro("__is_target_os");
-  Ident__is_target_environment =
-      RegisterBuiltinMacro("__is_target_environment");
-  Ident__is_target_variant_os = RegisterBuiltinMacro("__is_target_variant_os");
-  Ident__is_target_variant_environment =
-      RegisterBuiltinMacro("__is_target_variant_environment");
-
-  // Modules.
-  Ident__building_module = RegisterBuiltinMacro("__building_module");
-  if (!getLangOpts().CurrentModule.empty())
-    Ident__MODULE__ = RegisterBuiltinMacro("__MODULE__");
-  else
-    Ident__MODULE__ = nullptr;
+  [[maybe_unused]] const LangOptions &LangOpts = getLangOpts();
+  [[maybe_unused]] const PreprocessorOptions &PPOpts = getPreprocessorOpts();
+#define BUILTIN_MACRO(Member, Spelling, Predicate)                             \
+  Member = (Predicate) ? RegisterBuiltinMacro(Spelling) : nullptr;
+#include "clang/Lex/BuiltinMacros.def"
 }
 
 /// isTrivialSingleTokenExpansion - Return true if MI, which has a single token
