@@ -112,6 +112,90 @@ TEST(MinimizeSourceToDependencyDirectivesTest,
   EXPECT_FALSE(Macros.contains("int"));
 }
 
+TEST(MinimizeSourceToDependencyDirectivesTest,
+     CaptureConfigMacrosSkipsCompilerOwnedNames) {
+  SmallVector<dependency_directives_scan::Token, 16> Tokens;
+  SmallVector<Directive, 16> Directives;
+  llvm::StringSet<> Macros;
+
+  // Names the compiler owns are skipped no matter which of its tables they
+  // come from, so that only names a user could have passed with -D remain.
+  StringRef Source =
+      "#pragma once\n"
+      "#pragma clang module import Mod\n"
+      "#if defined(TARGET_OS_MAC) && !TARGET_OS_SIMULATOR\n"
+      "#endif\n"
+      "#if __has_include(<a.h>) || __has_builtin(__builtin_abs)\n"
+      "#endif\n"
+      "#if __has_feature(objc_arc) && __has_extension(blocks)\n"
+      "#endif\n"
+      "#if __has_attribute(visibility)\n"
+      "#endif\n"
+      "#if __has_cpp_attribute(nodiscard)\n"
+      "#endif\n"
+      "#if defined(A_USER_MACRO) and not defined(B_USER_MACRO)\n"
+      "#endif\n";
+  ASSERT_FALSE(scanSourceForDependencyDirectives(
+      Source, Tokens, Directives, /*Diags=*/nullptr,
+      /*InputSourceLoc=*/SourceLocation(), &Macros));
+
+  // Preprocessor keywords and the pragmas the scanner recognizes.
+  EXPECT_FALSE(Macros.contains("defined"));
+  EXPECT_FALSE(Macros.contains("pragma"));
+  EXPECT_FALSE(Macros.contains("once"));
+  EXPECT_FALSE(Macros.contains("clang"));
+  EXPECT_FALSE(Macros.contains("module"));
+  EXPECT_FALSE(Macros.contains("import"));
+  // Conditionals predefined from the target triple.
+  EXPECT_FALSE(Macros.contains("TARGET_OS_MAC"));
+  EXPECT_FALSE(Macros.contains("TARGET_OS_SIMULATOR"));
+  // Macros the preprocessor defines itself.
+  EXPECT_FALSE(Macros.contains("__has_include"));
+  EXPECT_FALSE(Macros.contains("__has_builtin"));
+  EXPECT_FALSE(Macros.contains("__has_feature"));
+  EXPECT_FALSE(Macros.contains("__has_cpp_attribute"));
+  // __has_feature() and __has_extension() arguments.
+  EXPECT_FALSE(Macros.contains("objc_arc"));
+  EXPECT_FALSE(Macros.contains("blocks"));
+  // __has_attribute() arguments.
+  EXPECT_FALSE(Macros.contains("visibility"));
+  EXPECT_FALSE(Macros.contains("nodiscard"));
+  // Alternative operator spellings, valid in a C++ '#if'.
+  EXPECT_FALSE(Macros.contains("and"));
+  EXPECT_FALSE(Macros.contains("not"));
+
+  // The user's own macros survive all of that.
+  EXPECT_TRUE(Macros.contains("A_USER_MACRO"));
+  EXPECT_TRUE(Macros.contains("B_USER_MACRO"));
+}
+
+TEST(MinimizeSourceToDependencyDirectivesTest,
+     CaptureConfigMacrosMatchesNamesExactly) {
+  SmallVector<dependency_directives_scan::Token, 16> Tokens;
+  SmallVector<Directive, 16> Directives;
+  llvm::StringSet<> Macros;
+
+  // Every name the compiler owns is matched in full. A user macro that merely
+  // begins with one must still be captured, because dropping a name that is
+  // really on the command line would under-report the macros a module depends
+  // on.
+  StringRef Source =
+      "#if NULLABLE && objc_bridge_ENABLED && TARGET_OSX_LEGACY\n"
+      "#endif\n"
+      "#if once_per_build && visibility_MODE && structural_FLAG\n"
+      "#endif\n";
+  ASSERT_FALSE(scanSourceForDependencyDirectives(
+      Source, Tokens, Directives, /*Diags=*/nullptr,
+      /*InputSourceLoc=*/SourceLocation(), &Macros));
+
+  EXPECT_TRUE(Macros.contains("NULLABLE"));
+  EXPECT_TRUE(Macros.contains("objc_bridge_ENABLED"));
+  EXPECT_TRUE(Macros.contains("TARGET_OSX_LEGACY"));
+  EXPECT_TRUE(Macros.contains("once_per_build"));
+  EXPECT_TRUE(Macros.contains("visibility_MODE"));
+  EXPECT_TRUE(Macros.contains("structural_FLAG"));
+}
+
 TEST(MinimizeSourceToDependencyDirectivesTest, AllTokens) {
   SmallVector<char, 128> Out;
   SmallVector<dependency_directives_scan::Token, 4> Tokens;

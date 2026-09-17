@@ -10,12 +10,21 @@
 #define LLVM_CLANG_BASIC_ATTRIBUTES_H
 
 #include "clang/Basic/AttributeCommonInfo.h"
+#include "llvm/ADT/ArrayRef.h"
 
 namespace clang {
 
 class IdentifierInfo;
 class LangOptions;
 class TargetInfo;
+
+/// Return every attribute spelling Attr.td declares, across all syntaxes.
+///
+/// This is the raw spelling list, so it says nothing about whether a given
+/// attribute is available in a particular language or on a particular target;
+/// use hasAttribute() to ask that. It is useful to clients that only need to
+/// recognize a name as belonging to the compiler rather than to the user.
+llvm::ArrayRef<const char *> getAttributeSpellings();
 
 /// Return the version number associated with the attribute if we
 /// recognize and implement the attribute specified by the given information.

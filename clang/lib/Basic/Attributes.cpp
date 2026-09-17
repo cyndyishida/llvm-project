@@ -271,6 +271,10 @@ static constexpr const char *AttrScopeSpellingList[] = {
 #include "clang/Basic/AttributeSpellingList.inc"
 };
 
+llvm::ArrayRef<const char *> clang::getAttributeSpellings() {
+  return AttrSpellingList;
+}
+
 std::optional<StringRef>
 AttributeCommonInfo::tryGetCorrectedScopeName(StringRef ScopeName) const {
   if (ScopeName.size() > 0 &&

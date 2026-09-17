@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/DependencyDirectivesScanner.h"
+#include "clang/Basic/Attributes.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/IdentifierTable.h"
@@ -631,21 +632,87 @@ bool Scanner::lexModuleDirectiveBody(DirectiveKind Kind, const char *&First,
                      diag::err_dep_source_scanner_unexpected_tokens_at_import);
 }
 
-/// The identifier spellings that are language keywords under the
-/// dependency-scanning language options. Keywords cannot be user configuration
-/// macros, so they are not recorded. Built once and shared read-only, which is
-/// safe for concurrent scans.
-static const StringSet<> &getKeywordSpellings() {
-  static const StringSet<> Keywords = [] {
+/// The pragmas the scanner turns into directives. Held as a table rather than
+/// spelled out at each use so that lexPragma() and getCompilerOwnedSpellings()
+/// cannot disagree about which spellings belong to the compiler.
+static constexpr struct {
+  StringRef Spelling;
+  DirectiveKind Kind;
+} PragmaDirectives[] = {
+    {"once", pp_pragma_once},
+    {"push_macro", pp_pragma_push_macro},
+    {"pop_macro", pp_pragma_pop_macro},
+    {"include_alias", pp_pragma_include_alias},
+};
+
+/// Words that appear only as part of a longer pragma the scanner recognizes,
+/// such as '#pragma clang module import'.
+namespace pragma_word {
+constexpr StringRef Clang = "clang";
+constexpr StringRef SystemHeader = "system_header";
+constexpr StringRef Module = "module";
+constexpr StringRef Import = "import";
+constexpr StringRef All[] = {Clang, SystemHeader, Module, Import};
+} // namespace pragma_word
+
+/// The identifier spellings that belong to the compiler rather than to the
+/// user, and so can never be a command-line configuration macro. Every entry
+/// comes from the table that defines it, so this set cannot drift from the
+/// compiler's own view of these names.
+///
+/// Built once and shared read-only, which is safe for concurrent scans.
+static const StringSet<> &getCompilerOwnedSpellings() {
+  static const StringSet<> Spellings = [] {
     LangOptions LangOpts = Scanner::getLangOptsForDepScanning();
-    StringSet<> Spellings;
+    StringSet<> S;
+
+    // Language keywords and their aliases. The scanner selects no language
+    // standard, so a keyword introduced by one reports KS_Future rather than
+    // KS_Disabled; it is still not a configuration macro, so anything other
+    // than KS_Disabled counts. Alternative operator spellings ('and', 'not')
+    // are always included because they are valid in a C++ '#if' regardless of
+    // the options the scanner lexes with.
 #define KEYWORD(NAME, FLAGS)                                                   \
   if (getKeywordStatus(LangOpts, FLAGS) != KS_Disabled)                        \
-    Spellings.insert(#NAME);
+    S.insert(#NAME);
+#define ALIAS(NAME, TOK, FLAGS)                                                \
+  if (getKeywordStatus(LangOpts, FLAGS) != KS_Disabled)                        \
+    S.insert(NAME);
+#define CXX_KEYWORD_OPERATOR(NAME, TOK) S.insert(#NAME);
+#define TESTING_KEYWORD(NAME, FLAGS)
+    // Preprocessor keywords: every directive name, plus 'defined'.
+#define PPKEYWORD(NAME) S.insert(#NAME);
 #include "clang/Basic/TokenKinds.def"
-    return Spellings;
+
+    // Pragmas the scanner itself recognizes.
+    for (const auto &P : PragmaDirectives)
+      S.insert(P.Spelling);
+    for (StringRef W : pragma_word::All)
+      S.insert(W);
+
+    // Conditionals the compiler predefines from the target triple.
+#define TARGET_OS(NAME, PREDICATE) S.insert(#NAME);
+#include "clang/Basic/TargetOSMacros.def"
+
+    // Macros the preprocessor defines itself, such as __has_include.
+#define BUILTIN_MACRO(MEMBER, SPELLING, PREDICATE) S.insert(SPELLING);
+#define BUILTIN_MACRO_UNREGISTERED(MEMBER, SPELLING) S.insert(SPELLING);
+#include "clang/Lex/BuiltinMacros.def"
+
+    // Names accepted by __has_feature() and __has_extension().
+#define FEATURE(NAME, PREDICATE) S.insert(#NAME);
+#define EXTENSION(NAME, PREDICATE) S.insert(#NAME);
+#include "clang/Basic/Features.def"
+
+    // Names accepted by __has_attribute() and its variants.
+    for (const char *Attr : getAttributeSpellings())
+      S.insert(Attr);
+
+    // Traits that are internal to clang are declared with no spelling.
+    S.erase("");
+    return S;
   }();
-  return Keywords;
+  return Spellings;
 }
 
 dependency_directives_scan::Token &Scanner::lexToken(const char *&First,
@@ -659,12 +726,11 @@ dependency_directives_scan::Token &Scanner::lexToken(const char *&First,
   CurDirToks.emplace_back(Offset, Tok.getLength(), Tok.getKind(),
                           Tok.getFlags());
 
-  // When collecting config macros, record raw identifiers that are neither
-  // preprocessor directive names nor language keywords.
+  // When collecting config macros, record raw identifiers that the compiler
+  // does not already own.
   if (Macros && Tok.getKind() == clang::tok::raw_identifier) {
     StringRef PossibleMacro = Input.slice(Offset, Offset + Tok.getLength());
-    if (getDirectiveKind(PossibleMacro) == pp_none &&
-        !getKeywordSpellings().contains(PossibleMacro))
+    if (!getCompilerOwnedSpellings().contains(PossibleMacro))
       CurMacros.push_back(PossibleMacro);
   }
 
@@ -896,19 +962,19 @@ bool Scanner::lexPragma(const char *&First, const char *const End) {
     return false;
 
   StringRef Id = *FoundId;
-  auto Kind = llvm::StringSwitch<DirectiveKind>(Id)
-                  .Case("once", pp_pragma_once)
-                  .Case("push_macro", pp_pragma_push_macro)
-                  .Case("pop_macro", pp_pragma_pop_macro)
-                  .Case("include_alias", pp_pragma_include_alias)
-                  .Default(pp_none);
+  DirectiveKind Kind = pp_none;
+  for (const auto &P : PragmaDirectives)
+    if (P.Spelling == Id) {
+      Kind = P.Kind;
+      break;
+    }
   if (Kind != pp_none) {
     lexPPDirectiveBody(First, End);
     pushDirective(Kind);
     return false;
   }
 
-  if (Id != "clang") {
+  if (Id != pragma_word::Clang) {
     skipLine(First, End);
     return false;
   }
@@ -919,19 +985,19 @@ bool Scanner::lexPragma(const char *&First, const char *const End) {
   Id = *FoundId;
 
   // #pragma clang system_header
-  if (Id == "system_header") {
+  if (Id == pragma_word::SystemHeader) {
     lexPPDirectiveBody(First, End);
     pushDirective(pp_pragma_system_header);
     return false;
   }
 
-  if (Id != "module") {
+  if (Id != pragma_word::Module) {
     skipLine(First, End);
     return false;
   }
 
   // #pragma clang module.
-  if (!isNextIdentifierOrSkipLine("import", First, End))
+  if (!isNextIdentifierOrSkipLine(pragma_word::Import, First, End))
     return false;
 
   // #pragma clang module import.
