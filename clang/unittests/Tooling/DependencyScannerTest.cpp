@@ -404,3 +404,286 @@ TEST(DependencyScanner, InvalidatedPathAfterModuleBuilt) {
 
   llvm::sys::fs::remove_directories(Root);
 }
+
+// Returns the module map the by-name scan reports for \p Name, or an empty
+// string if the scan fails.
+static std::string scanModuleMapFile(DependencyScanningTool &ScanTool,
+                                     StringRef CWD,
+                                     ArrayRef<std::string> CommandLine,
+                                     StringRef Name,
+                                     DiagnosticConsumer &DiagConsumer) {
+  llvm::DenseSet<ModuleID> AlreadySeen;
+  FullDependencyConsumer Consumer(AlreadySeen);
+  auto LookupModuleOutput = [](const ModuleDeps &MD, ModuleOutputKind) {
+    return "/root/out/" + MD.ID.ModuleName + ".pcm";
+  };
+  CallbackActionController Controller(LookupModuleOutput);
+  bool Queried = false;
+  auto GetNextName = [&]() -> std::optional<std::string> {
+    if (Queried)
+      return std::nullopt;
+    Queried = true;
+    return Name.str();
+  };
+  if (!ScanTool.getByNameDependencies(CWD, CommandLine, DiagConsumer,
+                                      Controller, GetNextName, Consumer))
+    return "";
+  TranslationUnitDeps Deps = Consumer.takeTranslationUnitDeps();
+  for (const ModuleDeps &MD : Deps.ModuleGraph)
+    if (MD.ID.ModuleName == Name)
+      return MD.ClangModuleMapFile;
+  return "";
+}
+
+TEST(DependencyScanner, GetModuleMapsForModules) {
+  // Verify a shadowed module resolves to the first search path, module headers
+  // are not looked up, and the path matches the one the scan reports.
+  std::vector<std::string> CommandLine = {
+      "clang",     "-target",  "x86_64-apple-macosx10.7",
+      "-c",        "test.m",   "-fmodules",
+      "-I/root/a", "-I/root/b"};
+  StringRef CWD = "/root";
+
+  auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  VFS->setCurrentWorkingDirectory(CWD);
+  auto AddFile = [&](StringRef Path, StringRef Contents) {
+    VFS->addFile(Path, 0, llvm::MemoryBuffer::getMemBufferCopy(Contents));
+  };
+  AddFile("/root/test.m", "\n");
+  AddFile("/root/a/module.modulemap", "module A { header \"a.h\" }\n");
+  AddFile("/root/a/a.h", "\n");
+  AddFile("/root/b/module.modulemap", "module A { header \"a.h\" }\n"
+                                      "module B { header \"b.h\" }\n");
+  AddFile("/root/b/a.h", "\n");
+  AddFile("/root/b/b.h", "\n");
+
+  struct InterceptorFS : llvm::vfs::ProxyFileSystem {
+    std::vector<std::string> StatPaths;
+
+    InterceptorFS(IntrusiveRefCntPtr<FileSystem> UnderlyingFS)
+        : ProxyFileSystem(UnderlyingFS) {}
+
+    llvm::ErrorOr<llvm::vfs::Status> status(const Twine &Path) override {
+      StatPaths.push_back(Path.str());
+      return ProxyFileSystem::status(Path);
+    }
+  };
+  auto InterceptFS = llvm::makeIntrusiveRefCnt<InterceptorFS>(VFS);
+
+  DependencyScanningServiceOptions Opts;
+  Opts.MakeVFS = [&] { return InterceptFS; };
+  DependencyScanningService Service(std::move(Opts));
+  DependencyScanningTool ScanTool(Service);
+  CallbackActionController Controller(
+      CallbackActionController::lookupUnreachableModuleOutput);
+  TextDiagnosticBuffer DiagConsumer;
+
+  std::optional<llvm::StringMap<std::string>> ModuleMaps =
+      ScanTool.getModuleMapsForModules(CWD, CommandLine, DiagConsumer,
+                                       Controller, {"A", "B", "Missing"});
+  ASSERT_TRUE(ModuleMaps);
+  using llvm::sys::path::convert_to_slash;
+  EXPECT_EQ(ModuleMaps->size(), 2u);
+  EXPECT_EQ(convert_to_slash(ModuleMaps->lookup("A")),
+            "/root/a/module.modulemap");
+  EXPECT_EQ(convert_to_slash(ModuleMaps->lookup("B")),
+            "/root/b/module.modulemap");
+  EXPECT_FALSE(ModuleMaps->contains("Missing"));
+
+  // Verify module headers were not looked up.
+  for (const std::string &Path : InterceptFS->StatPaths) {
+    StringRef FileName = llvm::sys::path::filename(Path);
+    EXPECT_NE(FileName, "a.h");
+    EXPECT_NE(FileName, "b.h");
+  }
+
+  // Verify the path matches the one the scan reports.
+  EXPECT_EQ(scanModuleMapFile(ScanTool, CWD, CommandLine, "A", DiagConsumer),
+            ModuleMaps->lookup("A"));
+}
+
+TEST(DependencyScanner, GetModuleMapsForModulesDoesNotReportErrors) {
+  // Verify lookups do not report errors from the module maps they parse.
+  std::vector<std::string> CommandLine = {
+      "clang",     "-target",   "x86_64-apple-macosx10.7",
+      "-c",        "test.m",    "-fmodules",
+      "-I/root/a", "-I/root/b", "-I/root/c"};
+  StringRef CWD = "/root";
+
+  auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  VFS->setCurrentWorkingDirectory(CWD);
+  auto AddFile = [&](StringRef Path, StringRef Contents) {
+    VFS->addFile(Path, 0, llvm::MemoryBuffer::getMemBufferCopy(Contents));
+  };
+  AddFile("/root/test.m", "\n");
+  // Looking up B parses both definitions of A, which is not an error since A
+  // is not loaded.
+  AddFile("/root/a/module.modulemap", "module A { header \"a.h\" }\n");
+  AddFile("/root/a/a.h", "\n");
+  AddFile("/root/b/module.modulemap", "module A { header \"a.h\" }\n"
+                                      "module B { header \"b.h\" }\n");
+  AddFile("/root/b/a.h", "\n");
+  AddFile("/root/b/b.h", "\n");
+  // Looking up Missing parses this invalid module map.
+  AddFile("/root/c/module.modulemap", "module {\n");
+
+  DependencyScanningServiceOptions Opts;
+  Opts.MakeVFS = [&] { return VFS; };
+  DependencyScanningService Service(std::move(Opts));
+  DependencyScanningTool ScanTool(Service);
+  CallbackActionController Controller(
+      CallbackActionController::lookupUnreachableModuleOutput);
+  TextDiagnosticBuffer DiagConsumer;
+
+  std::optional<llvm::StringMap<std::string>> ModuleMaps =
+      ScanTool.getModuleMapsForModules(CWD, CommandLine, DiagConsumer,
+                                       Controller, {"A", "B", "Missing"});
+  ASSERT_TRUE(ModuleMaps);
+  using llvm::sys::path::convert_to_slash;
+  EXPECT_EQ(ModuleMaps->size(), 2u);
+  EXPECT_EQ(convert_to_slash(ModuleMaps->lookup("A")),
+            "/root/a/module.modulemap");
+  EXPECT_EQ(convert_to_slash(ModuleMaps->lookup("B")),
+            "/root/b/module.modulemap");
+  EXPECT_FALSE(ModuleMaps->contains("Missing"));
+
+  // Verify no errors were reported.
+  std::vector<std::string> Errors;
+  for (auto It = DiagConsumer.err_begin(); It != DiagConsumer.err_end(); ++It)
+    Errors.push_back(It->second);
+  EXPECT_EQ(Errors, std::vector<std::string>{});
+}
+
+TEST(DependencyScanner, GetModuleMapsForModulesWithModuleMapFile) {
+  // Verify a module map passed with -fmodule-map-file takes precedence over
+  // search paths, as in the scan.
+  std::vector<std::string> CommandLine = {
+      "clang",
+      "-target",
+      "x86_64-apple-macosx10.7",
+      "-c",
+      "test.m",
+      "-fmodules",
+      "-fmodule-map-file=/root/b/module.modulemap",
+      "-I/root/a"};
+  StringRef CWD = "/root";
+
+  auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  VFS->setCurrentWorkingDirectory(CWD);
+  auto AddFile = [&](StringRef Path, StringRef Contents) {
+    VFS->addFile(Path, 0, llvm::MemoryBuffer::getMemBufferCopy(Contents));
+  };
+  AddFile("/root/test.m", "\n");
+  AddFile("/root/a/module.modulemap", "module A { header \"a.h\" }\n");
+  AddFile("/root/a/a.h", "\n");
+  AddFile("/root/b/module.modulemap", "module A { header \"a.h\" }\n");
+  AddFile("/root/b/a.h", "\n");
+
+  DependencyScanningServiceOptions Opts;
+  Opts.MakeVFS = [&] { return VFS; };
+  DependencyScanningService Service(std::move(Opts));
+  DependencyScanningTool ScanTool(Service);
+  CallbackActionController Controller(
+      CallbackActionController::lookupUnreachableModuleOutput);
+  TextDiagnosticBuffer DiagConsumer;
+
+  std::optional<llvm::StringMap<std::string>> ModuleMaps =
+      ScanTool.getModuleMapsForModules(CWD, CommandLine, DiagConsumer,
+                                       Controller, {"A"});
+  ASSERT_TRUE(ModuleMaps);
+  EXPECT_EQ(llvm::sys::path::convert_to_slash(ModuleMaps->lookup("A")),
+            "/root/b/module.modulemap");
+
+  // Verify the scan finds the same module map.
+  EXPECT_EQ(scanModuleMapFile(ScanTool, CWD, CommandLine, "A", DiagConsumer),
+            ModuleMaps->lookup("A"));
+}
+
+TEST(DependencyScanner, GetModuleMapsForModulesAfterModuleMapAdded) {
+  // Verify a module map added to an earlier search path is found by a later
+  // lookup on the same tool.
+  std::vector<std::string> CommandLine = {
+      "clang",     "-target",  "x86_64-apple-macosx10.7",
+      "-c",        "test.m",   "-fmodules",
+      "-I/root/a", "-I/root/b"};
+  StringRef CWD = "/root";
+
+  auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  VFS->setCurrentWorkingDirectory(CWD);
+  auto AddFile = [&](StringRef Path, StringRef Contents) {
+    VFS->addFile(Path, 0, llvm::MemoryBuffer::getMemBufferCopy(Contents));
+  };
+  AddFile("/root/test.m", "\n");
+  AddFile("/root/a/a.h", "\n");
+  AddFile("/root/b/module.modulemap", "module A { header \"a.h\" }\n");
+  AddFile("/root/b/a.h", "\n");
+
+  DependencyScanningServiceOptions Opts;
+  Opts.MakeVFS = [&] { return VFS; };
+  DependencyScanningService Service(std::move(Opts));
+  DependencyScanningTool ScanTool(Service);
+  CallbackActionController Controller(
+      CallbackActionController::lookupUnreachableModuleOutput);
+  TextDiagnosticBuffer DiagConsumer;
+  using llvm::sys::path::convert_to_slash;
+
+  std::optional<llvm::StringMap<std::string>> ModuleMaps =
+      ScanTool.getModuleMapsForModules(CWD, CommandLine, DiagConsumer,
+                                       Controller, {"A"});
+  ASSERT_TRUE(ModuleMaps);
+  EXPECT_EQ(convert_to_slash(ModuleMaps->lookup("A")),
+            "/root/b/module.modulemap");
+
+  // A is now defined in an earlier search path.
+  AddFile("/root/a/module.modulemap", "module A { header \"a.h\" }\n");
+
+  ModuleMaps = ScanTool.getModuleMapsForModules(CWD, CommandLine, DiagConsumer,
+                                                Controller, {"A"});
+  ASSERT_TRUE(ModuleMaps);
+  EXPECT_EQ(convert_to_slash(ModuleMaps->lookup("A")),
+            "/root/a/module.modulemap");
+}
+
+TEST(DependencyScanner, GetModuleMapsForModulesDoesNotAffectScan) {
+  // Verify a lookup does not affect a later scan on the same tool.
+  std::vector<std::string> CommandLine = {
+      "clang",     "-target",  "x86_64-apple-macosx10.7", "-c", "test.m",
+      "-fmodules", "-I/root/a"};
+  StringRef CWD = "/root";
+
+  auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  VFS->setCurrentWorkingDirectory(CWD);
+  auto AddFile = [&](StringRef Path, StringRef Contents) {
+    VFS->addFile(Path, 0, llvm::MemoryBuffer::getMemBufferCopy(Contents));
+  };
+  AddFile("/root/test.m", "\n");
+  AddFile("/root/a/module.modulemap", "module A { header \"a.h\" }\n"
+                                      "module B { header \"b.h\" }\n");
+  AddFile("/root/a/a.h", "\n");
+  AddFile("/root/a/b.h", "\n");
+
+  DependencyScanningServiceOptions Opts;
+  Opts.MakeVFS = [&] { return VFS; };
+  DependencyScanningService Service(std::move(Opts));
+  DependencyScanningTool ScanTool(Service);
+  CallbackActionController Controller(
+      CallbackActionController::lookupUnreachableModuleOutput);
+  TextDiagnosticBuffer DiagConsumer;
+
+  std::optional<llvm::StringMap<std::string>> ModuleMaps =
+      ScanTool.getModuleMapsForModules(CWD, CommandLine, DiagConsumer,
+                                       Controller, {"A"});
+  ASSERT_TRUE(ModuleMaps);
+  EXPECT_EQ(llvm::sys::path::convert_to_slash(ModuleMaps->lookup("A")),
+            "/root/a/module.modulemap");
+
+  EXPECT_EQ(llvm::sys::path::convert_to_slash(scanModuleMapFile(
+                ScanTool, CWD, CommandLine, "B", DiagConsumer)),
+            "/root/a/module.modulemap");
+
+  // Verify no errors were reported.
+  std::vector<std::string> Errors;
+  for (auto It = DiagConsumer.err_begin(); It != DiagConsumer.err_end(); ++It)
+    Errors.push_back(It->second);
+  EXPECT_EQ(Errors, std::vector<std::string>{});
+}

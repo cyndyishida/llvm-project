@@ -17,6 +17,7 @@
 #include "clang/DependencyScanning/ModuleDepCollector.h"
 #include "clang/Frontend/PCHContainerOperations.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBufferRef.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -76,6 +77,18 @@ public:
       DiagnosticConsumer &DiagConsumer, DependencyActionController &Controller,
       llvm::function_ref<std::optional<std::string>()> getNextName,
       DependencyConsumer &DepConsumer);
+
+  /// Find the module map that defines each module in \p ModuleNames, without
+  /// loading the modules or reporting diagnostics about the module maps.
+  ///
+  /// \returns std::nullopt if the command line could not be set up, otherwise
+  /// the canonicalized module map path of each module found, by module name.
+  std::optional<llvm::StringMap<std::string>>
+  getModuleMapsForModules(StringRef CWD, ArrayRef<std::string> CC1CommandLine,
+                          IntrusiveRefCntPtr<llvm::vfs::FileSystem> OverlayFS,
+                          DiagnosticConsumer &DiagConsumer,
+                          DependencyActionController &Controller,
+                          ArrayRef<StringRef> ModuleNames);
 
   /// Creates the effective VFS that will be used for the scan.
   ///
