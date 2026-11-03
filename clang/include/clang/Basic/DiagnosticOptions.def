@@ -12,7 +12,8 @@
 // that have enumeration type and VALUE_DIAGOPT (for options that
 // describe a value rather than a flag). The SEMANTIC_* variants of these macros
 // indicate options that affect the processing of the program, rather than
-// simply the output.
+// simply the output. The BENIGN_* variants indicate options that only affect
+// how diagnostics are formatted, and are not part of a module's identity.
 //
 //===----------------------------------------------------------------------===//
 #ifndef DIAGOPT
@@ -41,6 +42,11 @@ DIAGOPT(Name, Bits, Default)
 #ifndef SEMANTIC_ENUM_DIAGOPT
 #  define SEMANTIC_ENUM_DIAGOPT(Name, Type, Bits, Default) \
      ENUM_DIAGOPT(Name, Type, Bits, Default)
+#endif
+
+#ifndef BENIGN_VALUE_DIAGOPT
+#  define BENIGN_VALUE_DIAGOPT(Name, Bits, Default) \
+     VALUE_DIAGOPT(Name, Bits, Default)
 #endif
 
 SEMANTIC_DIAGOPT(IgnoreWarnings, 1, 0)   /// -w
@@ -97,7 +103,7 @@ VALUE_DIAGOPT(ShowLineNumbers, 1, DefaultShowLineNumbers)
 
 VALUE_DIAGOPT(TabStop, 32, DefaultTabStop) /// The distance between tab stops.
 /// Column limit for formatting message diagnostics, or 0 if unused.
-VALUE_DIAGOPT(MessageLength, 32, 0)
+BENIGN_VALUE_DIAGOPT(MessageLength, 32, 0)
 
 DIAGOPT(ShowSafeBufferUsageSuggestions, 1, 0)
 
@@ -107,3 +113,4 @@ DIAGOPT(ShowSafeBufferUsageSuggestions, 1, 0)
 #undef SEMANTIC_DIAGOPT
 #undef SEMANTIC_ENUM_DIAGOPT
 #undef SEMANTIC_VALUE_DIAGOPT
+#undef BENIGN_VALUE_DIAGOPT

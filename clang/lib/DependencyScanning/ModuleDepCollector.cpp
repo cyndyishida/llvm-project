@@ -260,6 +260,13 @@ makeCommonInvocationForModuleBuild(CompilerInvocation CI) {
   // LLVM options are not going to affect the AST
   CI.getFrontendOpts().LLVMArgs.clear();
 
+  // Options that only affect how diagnostics are formatted.
+#define DIAGOPT(Name, Bits, Default)
+#define ENUM_DIAGOPT(Name, Type, Bits, Default)
+#define BENIGN_VALUE_DIAGOPT(Name, Bits, Default)                              \
+  CI.getDiagnosticOpts().Name = Default;
+#include "clang/Basic/DiagnosticOptions.def"
+
   resetBenignCodeGenOptions(frontend::GenerateModule, CI.getLangOpts(),
                             CI.getCodeGenOpts());
 

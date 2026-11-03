@@ -5389,6 +5389,7 @@ std::string CompilerInvocation::computeContextHash() const {
 #define DIAGOPT(Name, Bits, Default) HBuilder.add(diagOpts.Name);
 #define ENUM_DIAGOPT(Name, Type, Bits, Default)                                \
   HBuilder.add(diagOpts.get##Name());
+#define BENIGN_VALUE_DIAGOPT(Name, Bits, Default)
 #include "clang/Basic/DiagnosticOptions.def"
 #undef DIAGOPT
 #undef ENUM_DIAGOPT
